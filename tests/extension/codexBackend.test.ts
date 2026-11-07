@@ -320,3 +320,36 @@ test('interruptCodexTurn sends turn/interrupt request', async () => {
     restore();
   }
 });
+
+test('sendCodexChatTurn rejects with connection error when socket closes mid-turn', async () => {
+  const restore = setupMockWebSocket();
+  try {
+    const client = new CodexClient();
+    const connectPromise = client.connect(45123);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+    await connectPromise;
+
+    const tabId = 305;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'thread-disconnect-test';
+
+    const turnPromise = sendCodexChatTurn(
+      { message: 'Disconnect test' },
+      { tabId, client }
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    const turnReq = JSON.parse(ws.sent[1]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: turnReq.id, result: { turn: { id: 'turn-d1' } } });
+
+    // Socket disconnects without turn/completed
+    ws.close();
+
+    await assert.rejects(turnPromise, /WebSocket connection closed|disconnected/i);
+  } finally {
+    restore();
+  }
+});

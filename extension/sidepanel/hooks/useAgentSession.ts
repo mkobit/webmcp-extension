@@ -716,6 +716,10 @@ export function useAgentSession(
         endChat(internals.chatId, { onDevice: onDeviceModelRef.current });
         internals.chatId = undefined;
       }
+      if (!atLimit) {
+        internals.codexThreadId = undefined;
+        internals.codexTurnId = undefined;
+      }
     } finally {
       if (!signal.aborted) {
         tabSessions.update(tabId, { pendingPermission: null, pendingCheckpoint: null, busy: false });

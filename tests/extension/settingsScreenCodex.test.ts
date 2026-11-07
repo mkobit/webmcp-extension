@@ -135,3 +135,25 @@ test('SettingsScreen locks backend, port, and model inputs when responseInProgre
   // Backend selector must be disabled
   assert.match(html, /<select[^>]*aria-label="Backend"[^>]*disabled/);
 });
+
+test('SettingsScreen permits typing intermediate port values', () => {
+  const html = renderToString(
+    React.createElement(SettingsScreen, {
+      sensitiveActionAlerts: true,
+      onToggleSensitiveActionAlerts: () => {},
+      onDeviceModel: false,
+      onToggleOnDeviceModel: () => {},
+      onDeviceModelSupported: true,
+      backendMode: 'codex',
+      onChangeBackendMode: () => {},
+      codexPort: 45123,
+      onChangeCodexPort: () => {},
+      codexModel: 'gpt-6.1-sol',
+      onChangeCodexModel: () => {},
+      availableModels: mockModels,
+      onClose: () => {},
+    })
+  );
+
+  assert.ok(html.includes('aria-label="Codex port"'));
+});

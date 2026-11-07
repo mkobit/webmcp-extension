@@ -563,4 +563,57 @@ test('useAgentSession handleStop interrupts Codex turn and handleReset clears th
   }
 });
 
+test('useAgentSession clears codexThreadId when chat turn encounters an error', async () => {
+  const React = await import('react');
+  const { renderToString } = await import('react-dom/server');
+  const { useAgentSession } = await import('../../extension/sidepanel/hooks/useAgentSession.js');
+  const { tabSessions } = await import('../../extension/sidepanel/services/tabSessionStore.js');
+  const { getCodexClient } = await import('../../extension/sidepanel/services/codexBackend.js');
+
+  const originalWs = (globalThis as any).WebSocket;
+  HookMockWebSocket.instances = [];
+  (globalThis as any).WebSocket = HookMockWebSocket;
+  getCodexClient().disconnect();
+
+  try {
+    const tabId = 403;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'th-403';
+    tabSessions.update(tabId, { userPrompt: 'Error prompt' });
+
+    let session: any = null;
+    const Probe = () => {
+      session = useAgentSession(tabId, {
+        backendMode: 'codex',
+        codexConfig: { port: 45123, model: 'gpt-6.1-sol', effort: 'medium' },
+      });
+      return null;
+    };
+    renderToString(React.createElement(Probe));
+    session.setUserPrompt('Error prompt');
+
+    const sendPromise = session.handleSendPrompt();
+    await new Promise((r) => setTimeout(r, 10));
+    const ws = HookMockWebSocket.instances[0];
+    assert.ok(ws);
+    ws.simulateOpen();
+
+    await new Promise((r) => setTimeout(r, 10));
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+
+    await new Promise((r) => setTimeout(r, 10));
+    // Turn fails / disconnects
+    ws.close();
+
+    await sendPromise;
+
+    // codexThreadId must be cleared on failure
+    assert.equal(tabSessions.getInternals(tabId).codexThreadId, undefined);
+    assert.equal(tabSessions.getInternals(tabId).codexTurnId, undefined);
+  } finally {
+    (globalThis as any).WebSocket = originalWs;
+  }
+});
+
 

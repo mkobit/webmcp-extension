@@ -80,7 +80,7 @@ export function App() {
     const client = getCodexClient();
     (async () => {
       try {
-        if (!client.isConnected()) {
+        if (!client.isConnected() || client.getPort() !== codexPort) {
           await client.connect(codexPort);
         }
         const res = await client.listModels();

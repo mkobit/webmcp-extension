@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useId } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { CloseIcon, DeviceIcon, ShieldIcon } from '../components/Icons.js';
 import { Switch } from '../components/Switch.js';
 import type { BackendMode } from '../services/codexSettings.js';
@@ -59,6 +59,11 @@ export function SettingsScreen({
 
   const effectiveBackend: BackendMode =
     backendMode ?? (onDeviceModel ? 'onDevice' : 'companion');
+
+  const [portInput, setPortInput] = useState<string>(() => String(codexPort));
+  useEffect(() => {
+    setPortInput(String(codexPort));
+  }, [codexPort]);
 
   const selectedModelObj = availableModels.find((m) => m.id === codexModel);
   const reasoningEfforts = selectedModelObj?.supportedReasoningEfforts ?? [];
@@ -130,9 +135,12 @@ export function SettingsScreen({
                   disabled={responseInProgress}
                   onChange={(e) => {
                     const val = e.target.value as BackendMode;
-                    onChangeBackendMode?.(val);
-                    if (val === 'onDevice' && !onDeviceModel) onToggleOnDeviceModel();
-                    if (val !== 'onDevice' && onDeviceModel) onToggleOnDeviceModel();
+                    if (onChangeBackendMode) {
+                      onChangeBackendMode(val);
+                    } else {
+                      if (val === 'onDevice' && !onDeviceModel) onToggleOnDeviceModel();
+                      if (val !== 'onDevice' && onDeviceModel) onToggleOnDeviceModel();
+                    }
                   }}
                 >
                   <option value="companion">Companion server</option>
@@ -191,11 +199,23 @@ export function SettingsScreen({
                     aria-label="Codex port"
                     min={1024}
                     max={65535}
-                    value={codexPort}
+                    value={portInput}
                     disabled={responseInProgress}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(val)) onChangeCodexPort?.(val);
+                      const text = e.target.value;
+                      setPortInput(text);
+                      const val = parseInt(text, 10);
+                      if (!Number.isNaN(val) && val >= 1024 && val <= 65535) {
+                        onChangeCodexPort?.(val);
+                      }
+                    }}
+                    onBlur={() => {
+                      const val = parseInt(portInput, 10);
+                      if (!Number.isNaN(val) && val >= 1024 && val <= 65535) {
+                        onChangeCodexPort?.(val);
+                      } else {
+                        setPortInput(String(codexPort));
+                      }
                     }}
                   />
                 </div>
