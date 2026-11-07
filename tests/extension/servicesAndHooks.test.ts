@@ -411,3 +411,156 @@ test('backendBridge - streamChat reports text as it arrives and resolves with th
   }
 });
 
+class HookMockWebSocket {
+  static instances: HookMockWebSocket[] = [];
+  url: string;
+  readyState = 0;
+  sent: string[] = [];
+  onopen: ((event: any) => void) | null = null;
+  onclose: ((event: any) => void) | null = null;
+  onerror: ((event: any) => void) | null = null;
+  onmessage: ((event: any) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    HookMockWebSocket.instances.push(this);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.onclose?.({ code: 1000, reason: 'Normal' });
+  }
+
+  simulateOpen(): void {
+    this.readyState = 1;
+    this.onopen?.({});
+  }
+
+  simulateMessage(data: unknown): void {
+    const text = typeof data === 'string' ? data : JSON.stringify(data);
+    this.onmessage?.({ data: text });
+  }
+}
+
+test('useAgentSession routes turns to Codex when backendMode is codex', async () => {
+  const React = await import('react');
+  const { renderToString } = await import('react-dom/server');
+  const { useAgentSession } = await import('../../extension/sidepanel/hooks/useAgentSession.js');
+  const { tabSessions } = await import('../../extension/sidepanel/services/tabSessionStore.js');
+
+  const originalWs = (globalThis as any).WebSocket;
+  HookMockWebSocket.instances = [];
+  (globalThis as any).WebSocket = HookMockWebSocket;
+
+  try {
+    const tabId = 401;
+    tabSessions.resetChat(tabId);
+    tabSessions.update(tabId, { userPrompt: 'Hello codex agent' });
+
+    let session: any = null;
+    const Probe = () => {
+      session = useAgentSession(tabId, {
+        backendMode: 'codex',
+        codexConfig: {
+          port: 45123,
+          model: 'gpt-6.1-sol',
+          effort: 'medium',
+        },
+      });
+      return null;
+    };
+    renderToString(React.createElement(Probe));
+    assert.ok(session);
+
+    session.setUserPrompt('Hello codex agent');
+
+    const sendPromise = session.handleSendPrompt();
+
+    // Auto-respond to WebSocket handshake
+    await new Promise((r) => setTimeout(r, 10));
+    const ws = HookMockWebSocket.instances[0];
+    assert.ok(ws);
+    ws.simulateOpen();
+
+    await new Promise((r) => setTimeout(r, 10));
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+
+    await new Promise((r) => setTimeout(r, 10));
+    const threadReq = JSON.parse(ws.sent[1]);
+    assert.equal(threadReq.method, 'thread/start');
+    ws.simulateMessage({ jsonrpc: '2.0', id: threadReq.id, result: { thread: { id: 'th-401' } } });
+
+    await new Promise((r) => setTimeout(r, 10));
+    const turnReq = JSON.parse(ws.sent[2]);
+    assert.equal(turnReq.method, 'turn/start');
+    ws.simulateMessage({ jsonrpc: '2.0', id: turnReq.id, result: { turn: { id: 'turn-401' } } });
+
+    // Stream text and complete
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'item/agentMessage/delta',
+      params: { threadId: 'th-401', turnId: 'turn-401', delta: 'Codex reply' },
+    });
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: 'th-401', turn: { id: 'turn-401' } },
+    });
+
+    await sendPromise;
+
+    const messages = tabSessions.getState(tabId).messages;
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].text, 'Hello codex agent');
+    assert.equal(messages[1].text, 'Codex reply');
+  } finally {
+    (globalThis as any).WebSocket = originalWs;
+  }
+});
+
+test('useAgentSession handleStop interrupts Codex turn and handleReset clears thread', async () => {
+  const React = await import('react');
+  const { renderToString } = await import('react-dom/server');
+  const { useAgentSession } = await import('../../extension/sidepanel/hooks/useAgentSession.js');
+  const { tabSessions } = await import('../../extension/sidepanel/services/tabSessionStore.js');
+
+  const originalWs = (globalThis as any).WebSocket;
+  HookMockWebSocket.instances = [];
+  (globalThis as any).WebSocket = HookMockWebSocket;
+
+  try {
+    const tabId = 402;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'th-402';
+    tabSessions.getInternals(tabId).codexTurnId = 'turn-402';
+    tabSessions.update(tabId, { userPrompt: 'Stop test', busy: true });
+
+    let session: any = null;
+    const Probe = () => {
+      session = useAgentSession(tabId, {
+        backendMode: 'codex',
+        codexConfig: { port: 45123, model: 'gpt-6.1-sol', effort: 'medium' },
+      });
+      return null;
+    };
+    renderToString(React.createElement(Probe));
+
+    // Call handleStop
+    session.handleStop();
+    assert.equal(tabSessions.getState(tabId).busy, false);
+
+    // Call handleReset
+    session.handleReset();
+    assert.equal(tabSessions.getInternals(tabId).codexThreadId, undefined);
+    assert.equal(tabSessions.getInternals(tabId).codexTurnId, undefined);
+  } finally {
+    (globalThis as any).WebSocket = originalWs;
+  }
+});
+
+

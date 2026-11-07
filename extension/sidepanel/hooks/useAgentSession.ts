@@ -13,6 +13,8 @@ import {
 } from 'react';
 import { formatErrorMessage } from '../services/backendBridge.js';
 import { endChat, getSpotlighting, sendChatTurn } from '../services/chatBridge.js';
+import { interruptCodexTurn, type CodexChatTurnOptions } from '../services/codexBackend.js';
+import type { BackendMode } from '../services/codexSettings.js';
 import { executeTabTool, getTabInfo, requestTabTools } from '../services/extensionBridge.js';
 import { tabSessions } from '../services/tabSessionStore.js';
 import { buildToolDecls, decodeToolName } from '../services/toolEncoder.js';
@@ -41,6 +43,12 @@ export interface UseAgentSessionOptions {
   sensitiveActionAlerts?: boolean;
   /** Run the model on the device through the Prompt API instead of the server. */
   onDeviceModel?: boolean;
+  backendMode?: BackendMode;
+  codexConfig?: {
+    port: number;
+    model: string;
+    effort: string;
+  };
   /**
    * The origin of the page the tools belong to, such as `https://example.com`.
    * Permission granted for the rest of the session is remembered against it,
@@ -247,6 +255,16 @@ export function useAgentSession(
     onDeviceModelRef.current = next;
   }, [options?.onDeviceModel]);
 
+  const backendModeRef = useRef<BackendMode | undefined>(options?.backendMode);
+  useEffect(() => {
+    backendModeRef.current = options?.backendMode;
+  }, [options?.backendMode]);
+
+  const codexConfigRef = useRef(options?.codexConfig);
+  useEffect(() => {
+    codexConfigRef.current = options?.codexConfig;
+  }, [options?.codexConfig]);
+
   // Read when a tool is about to run rather than when the turn started, so a
   // call that follows a navigation is judged against the page it lands on.
   const originRef = useRef<string>(options?.origin ?? '');
@@ -290,6 +308,9 @@ export function useAgentSession(
       internals.abortController.abort();
       internals.abortController = null;
     }
+    if (backendModeRef.current === 'codex') {
+      void interruptCodexTurn(activeTabId);
+    }
     persistTurnOutput(activeTabId, tabSessions.getState(activeTabId).streamingText, onDeviceModelRef.current);
     tabSessions.update(activeTabId, {
       streamingText: '',
@@ -304,7 +325,10 @@ export function useAgentSession(
     // A new chat asks again: permission was given for the conversation the
     // user was having, not for every one that follows it.
     if (activeTabId == null) return;
-    tabSessions.resetChat(activeTabId, { onDevice: onDeviceModelRef.current });
+    tabSessions.resetChat(activeTabId, {
+      onDevice: onDeviceModelRef.current,
+      codex: backendModeRef.current === 'codex',
+    });
   }, [activeTabId]);
 
   // Main prompt sending logic via backend
@@ -496,6 +520,32 @@ export function useAgentSession(
     };
 
     try {
+      const isCodex = backendModeRef.current === 'codex';
+      const codexOptions: CodexChatTurnOptions | undefined = isCodex
+        ? {
+            tabId,
+            origin: originRef.current,
+            tools: toolsView.current,
+            port: codexConfigRef.current?.port,
+            model: codexConfigRef.current?.model,
+            effort: codexConfigRef.current?.effort,
+            sensitiveActionAlerts: sensitiveActionAlertsRef.current,
+            onRequestPermission: async ({ tool, consequential, canAllowAlways }) => {
+              const decision = await askToolPermission(tabId, signal, {
+                toolName: tool.name,
+                toolDescription: tool.description,
+                origin: originRef.current || undefined,
+                consequential,
+                canAllowAlways,
+              });
+              return decision;
+            },
+            onTabChanged: (movedTabId) => {
+              turnTabId = movedTabId;
+            },
+          }
+        : undefined;
+
       const toolDecls = buildToolDecls(toolsView.current);
       let currentResult: ChatTurnResponse = await sendChatTurn(
         {
@@ -503,7 +553,13 @@ export function useAgentSession(
           tools: toolDecls,
           chatId: internals.chatId,
         },
-        { signal, onDevice: onDeviceModelRef.current, onText }
+        {
+          signal,
+          onDevice: onDeviceModelRef.current,
+          backend: backendModeRef.current,
+          codexOptions,
+          onText,
+        }
       );
 
       if (signal.aborted) return;
