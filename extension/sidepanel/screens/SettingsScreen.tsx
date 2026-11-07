@@ -6,6 +6,8 @@
 import { useId } from 'react';
 import { CloseIcon, DeviceIcon, ShieldIcon } from '../components/Icons.js';
 import { Switch } from '../components/Switch.js';
+import type { BackendMode } from '../services/codexSettings.js';
+import type { CodexModel } from '../types/codex.js';
 
 export interface SettingsScreenProps {
   sensitiveActionAlerts: boolean;
@@ -16,11 +18,21 @@ export interface SettingsScreenProps {
   /** A response is being generated, which the model must not change under. */
   responseInProgress?: boolean;
   onClose: () => void;
+
+  backendMode?: BackendMode;
+  onChangeBackendMode?: (mode: BackendMode) => void;
+  codexPort?: number;
+  onChangeCodexPort?: (port: number) => void;
+  codexModel?: string;
+  onChangeCodexModel?: (model: string) => void;
+  codexReasoningEffort?: string;
+  onChangeCodexReasoningEffort?: (effort: string) => void;
+  availableModels?: CodexModel[];
 }
 
 /**
  * SettingsScreen Component
- * Presents settings options, currently featuring the Sensitive action alerts permission toggle.
+ * Presents settings options for permissions, backend, and model configuration.
  */
 export function SettingsScreen({
   sensitiveActionAlerts,
@@ -30,11 +42,27 @@ export function SettingsScreen({
   onDeviceModelSupported,
   responseInProgress = false,
   onClose,
+  backendMode,
+  onChangeBackendMode,
+  codexPort = 45123,
+  onChangeCodexPort,
+  codexModel = '',
+  onChangeCodexModel,
+  codexReasoningEffort = '',
+  onChangeCodexReasoningEffort,
+  availableModels = [],
 }: SettingsScreenProps) {
   const alertsDescId = useId();
   const modelDescId = useId();
   const modelLockedId = useId();
   const modelLocked = onDeviceModelSupported && responseInProgress;
+
+  const effectiveBackend: BackendMode =
+    backendMode ?? (onDeviceModel ? 'onDevice' : 'companion');
+
+  const selectedModelObj = availableModels.find((m) => m.id === codexModel);
+  const reasoningEfforts = selectedModelObj?.supportedReasoningEfforts ?? [];
+  const hasReasoning = reasoningEfforts.length > 0;
 
   return (
     <div className="settings-view">
@@ -82,33 +110,150 @@ export function SettingsScreen({
         <div className="settings-section">
           <h2 className="settings-section__title">Model</h2>
 
-          <div className="settings-item">
-            <div className="settings-item__icon">
-              <DeviceIcon size={24} color="var(--color-on-surface-variant)" />
-            </div>
-            <div className="settings-item__content">
-              <span className="settings-item__title">On-device model</span>
-              <p id={modelDescId} className="settings-item__desc">
-                {onDeviceModelSupported
-                  ? 'Run the model in your browser with the Prompt API, instead of sending prompts and page data to the backend server. No API key needed.'
-                  : 'Unavailable: this browser does not expose the Prompt API. Prompts go to the backend server.'}
-              </p>
-              {modelLocked && (
-                <p id={modelLockedId} className="settings-item__desc">
-                  Can be changed once the current response has finished.
+          {/* Backend Selector */}
+          {backendMode !== undefined && (
+            <div className="settings-item">
+              <div className="settings-item__icon">
+                <DeviceIcon size={24} color="var(--color-on-surface-variant)" />
+              </div>
+              <div className="settings-item__content">
+                <span className="settings-item__title">Backend</span>
+                <p className="settings-item__desc">
+                  Select which service powers model generation and tool calling.
                 </p>
+              </div>
+              <div className="settings-item__control">
+                <select
+                  className="settings-select"
+                  aria-label="Backend"
+                  value={effectiveBackend}
+                  disabled={responseInProgress}
+                  onChange={(e) => {
+                    const val = e.target.value as BackendMode;
+                    onChangeBackendMode?.(val);
+                    if (val === 'onDevice' && !onDeviceModel) onToggleOnDeviceModel();
+                    if (val !== 'onDevice' && onDeviceModel) onToggleOnDeviceModel();
+                  }}
+                >
+                  <option value="companion">Companion server</option>
+                  <option value="onDevice" disabled={!onDeviceModelSupported}>
+                    On-device Prompt API
+                  </option>
+                  <option value="codex">Codex app-server</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* On-device model toggle */}
+          {(backendMode === undefined || effectiveBackend === 'onDevice') && (
+            <div className="settings-item">
+              <div className="settings-item__icon">
+                <DeviceIcon size={24} color="var(--color-on-surface-variant)" />
+              </div>
+              <div className="settings-item__content">
+                <span className="settings-item__title">On-device model</span>
+                <p id={modelDescId} className="settings-item__desc">
+                  {onDeviceModelSupported
+                    ? 'Run the model in your browser with the Prompt API, instead of sending prompts and page data to the backend server. No API key needed.'
+                    : 'Unavailable: this browser does not expose the Prompt API. Prompts go to the backend server.'}
+                </p>
+                {modelLocked && (
+                  <p id={modelLockedId} className="settings-item__desc">
+                    Can be changed once the current response has finished.
+                  </p>
+                )}
+              </div>
+              <div className="settings-item__control">
+                <Switch
+                  checked={onDeviceModel}
+                  onChange={onToggleOnDeviceModel}
+                  disabled={!onDeviceModelSupported || responseInProgress}
+                  aria-label="On-device model"
+                  aria-describedby={modelLocked ? `${modelDescId} ${modelLockedId}` : modelDescId}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Codex app-server configuration controls */}
+          {effectiveBackend === 'codex' && (
+            <>
+              <div className="settings-item">
+                <div className="settings-item__content">
+                  <span className="settings-item__title">Codex port</span>
+                  <p className="settings-item__desc">Port number of local codex app-server.</p>
+                </div>
+                <div className="settings-item__control">
+                  <input
+                    type="number"
+                    className="settings-input"
+                    aria-label="Codex port"
+                    min={1024}
+                    max={65535}
+                    value={codexPort}
+                    disabled={responseInProgress}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!Number.isNaN(val)) onChangeCodexPort?.(val);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="settings-item">
+                <div className="settings-item__content">
+                  <span className="settings-item__title">Codex model</span>
+                  <p className="settings-item__desc">Active model on local codex app-server.</p>
+                </div>
+                <div className="settings-item__control">
+                  <select
+                    className="settings-select"
+                    aria-label="Codex model"
+                    value={codexModel}
+                    disabled={responseInProgress}
+                    onChange={(e) => onChangeCodexModel?.(e.target.value)}
+                  >
+                    {availableModels.length === 0 ? (
+                      <option value={codexModel}>{codexModel || 'Default'}</option>
+                    ) : (
+                      availableModels.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.displayName || m.id}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              {hasReasoning && (
+                <div className="settings-item">
+                  <div className="settings-item__content">
+                    <span className="settings-item__title">Reasoning effort</span>
+                    <p className="settings-item__desc">Level of reasoning effort for this model.</p>
+                  </div>
+                  <div className="settings-item__control">
+                    <select
+                      className="settings-select"
+                      aria-label="Reasoning effort"
+                      value={codexReasoningEffort}
+                      disabled={responseInProgress}
+                      onChange={(e) => onChangeCodexReasoningEffort?.(e.target.value)}
+                    >
+                      {reasoningEfforts.map((r) => (
+                        <option key={r.reasoningEffort} value={r.reasoningEffort}>
+                          {r.description
+                            ? `${r.reasoningEffort} (${r.description})`
+                            : r.reasoningEffort}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               )}
-            </div>
-            <div className="settings-item__control">
-              <Switch
-                checked={onDeviceModel}
-                onChange={onToggleOnDeviceModel}
-                disabled={!onDeviceModelSupported || responseInProgress}
-                aria-label="On-device model"
-                aria-describedby={modelLocked ? `${modelDescId} ${modelLockedId}` : modelDescId}
-              />
-            </div>
-          </div>
+            </>
+          )}
         </div>
       </div>
     </div>
