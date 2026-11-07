@@ -1465,6 +1465,67 @@ main {
   cursor: not-allowed;
 }
 
+.settings-refresh-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  margin-left: 6px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-on-surface-variant);
+  transition: background-color 0.15s ease;
+}
+
+.settings-refresh-btn:hover:not(:disabled) {
+  background-color: var(--color-surface-container-high);
+}
+
+.settings-refresh-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.settings-item--error {
+  align-items: center;
+  background-color: var(--color-surface-container-low, #f7f2fa);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.settings-error-text {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-error, #b3261e);
+  margin: 0;
+  word-break: break-word;
+}
+
+.settings-retry-btn {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-primary);
+  background: none;
+  border: 1px solid var(--color-outline-variant, #cac4d0);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.settings-retry-btn:hover:not(:disabled) {
+  background-color: var(--color-surface-container-high);
+}
+
+.settings-retry-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 /* Material Switch Component */
 .cdds-switch {
   display: inline-flex;

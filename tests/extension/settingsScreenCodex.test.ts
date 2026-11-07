@@ -157,3 +157,53 @@ test('SettingsScreen permits typing intermediate port values', () => {
 
   assert.ok(html.includes('aria-label="Codex port"'));
 });
+
+test('SettingsScreen renders refresh button and handles loading and error states', () => {
+  const htmlWithError = renderToString(
+    React.createElement(SettingsScreen, {
+      sensitiveActionAlerts: true,
+      onToggleSensitiveActionAlerts: () => {},
+      onDeviceModel: false,
+      onToggleOnDeviceModel: () => {},
+      onDeviceModelSupported: true,
+      backendMode: 'codex',
+      onChangeBackendMode: () => {},
+      codexPort: 45123,
+      onChangeCodexPort: () => {},
+      codexModel: 'gpt-6.1-sol',
+      onChangeCodexModel: () => {},
+      availableModels: [],
+      onRefreshModels: () => {},
+      isLoadingModels: false,
+      modelsError: 'Cannot connect to Codex app-server on ws://127.0.0.1:45123',
+      onClose: () => {},
+    })
+  );
+
+  assert.ok(htmlWithError.includes('aria-label="Refresh Codex models"'));
+  assert.ok(htmlWithError.includes('Cannot connect to Codex app-server on ws://127.0.0.1:45123'));
+  assert.ok(htmlWithError.includes('Retry'));
+
+  const htmlLoading = renderToString(
+    React.createElement(SettingsScreen, {
+      sensitiveActionAlerts: true,
+      onToggleSensitiveActionAlerts: () => {},
+      onDeviceModel: false,
+      onToggleOnDeviceModel: () => {},
+      onDeviceModelSupported: true,
+      backendMode: 'codex',
+      onChangeBackendMode: () => {},
+      codexPort: 45123,
+      onChangeCodexPort: () => {},
+      codexModel: 'gpt-6.1-sol',
+      onChangeCodexModel: () => {},
+      availableModels: mockModels,
+      onRefreshModels: () => {},
+      isLoadingModels: true,
+      onClose: () => {},
+    })
+  );
+
+  assert.match(htmlLoading, /<select[^>]*aria-label="Codex model"[^>]*disabled/);
+  assert.match(htmlLoading, /<button[^>]*class="settings-refresh-btn"[^>]*disabled/);
+});
