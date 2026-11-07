@@ -9,6 +9,19 @@ import { WebMCPToolsDialogue } from './components/WebMCPToolsDialogue.js';
 import { IPHPopover } from './components/IPHPopover.js';
 import { ConsentScreen } from './screens/ConsentScreen.js';
 import { SettingsScreen } from './screens/SettingsScreen.js';
+import {
+  getBackendMode,
+  setBackendMode,
+  getCodexPort,
+  setCodexPort,
+  getCodexModel,
+  setCodexModel,
+  getCodexReasoningEffort,
+  setCodexReasoningEffort,
+  type BackendMode,
+} from './services/codexSettings.js';
+import { getCodexClient } from './services/codexBackend.js';
+import type { CodexModel } from './types/codex.js';
 import { MarkdownText } from './components/MarkdownText.js';
 import { ActionLog } from './components/ActionLog.js';
 import { OnDeviceModelStatus } from './components/OnDeviceModelStatus.js';
@@ -53,6 +66,40 @@ export function App() {
     }
   });
 
+  const [backendMode, setBackendModeState] = useState<BackendMode>(() => getBackendMode());
+  const [codexPort, setCodexPortState] = useState<number>(() => getCodexPort());
+  const [codexModel, setCodexModelState] = useState<string>(() => getCodexModel());
+  const [codexReasoningEffort, setCodexReasoningEffortState] = useState<string>(
+    () => getCodexReasoningEffort()
+  );
+  const [availableModels, setAvailableModels] = useState<CodexModel[]>([]);
+
+  useEffect(() => {
+    if (backendMode !== 'codex') return;
+    let cancelled = false;
+    const client = getCodexClient();
+    (async () => {
+      try {
+        if (!client.isConnected()) {
+          await client.connect(codexPort);
+        }
+        const res = await client.listModels();
+        if (cancelled) return;
+        setAvailableModels(res.data);
+        if (res.data.length > 0 && !codexModel) {
+          const defaultModel = res.data.find((m) => m.isDefault) ?? res.data[0];
+          setCodexModelState(defaultModel.id);
+          setCodexModel(defaultModel.id);
+        }
+      } catch {
+        // Keep availableModels as is or empty if connection failed
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [backendMode, codexPort]);
+
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
 
   const [showToolsDialogue, setShowToolsDialogue] = useState<boolean>(false);
@@ -64,6 +111,42 @@ export function App() {
       localStorage.setItem('sensitiveActionAlerts', String(next));
       return next;
     });
+  };
+
+  const handleChangeBackendMode = (mode: BackendMode) => {
+    if (anyBusy) return;
+    setBackendMode(mode);
+    setBackendModeState(mode);
+    const isOnDevice = mode === 'onDevice';
+    setOnDeviceModel(isOnDevice);
+    if (isOnDevice) {
+      void startOnDeviceModelDownload();
+    }
+  };
+
+  const handleChangeCodexPort = (port: number) => {
+    if (anyBusy) return;
+    try {
+      setCodexPort(port);
+      setCodexPortState(port);
+    } catch {}
+  };
+
+  const handleChangeCodexModel = (model: string) => {
+    if (anyBusy) return;
+    setCodexModel(model);
+    setCodexModelState(model);
+    const modelObj = availableModels.find((m) => m.id === model);
+    if (modelObj?.defaultReasoningEffort) {
+      setCodexReasoningEffort(modelObj.defaultReasoningEffort);
+      setCodexReasoningEffortState(modelObj.defaultReasoningEffort);
+    }
+  };
+
+  const handleChangeCodexReasoningEffort = (effort: string) => {
+    if (anyBusy) return;
+    setCodexReasoningEffort(effort);
+    setCodexReasoningEffortState(effort);
   };
 
   // Custom Hooks
@@ -84,7 +167,17 @@ export function App() {
     handleSendPrompt,
     handleStop,
     handleReset,
-  } = useAgentSession(activeTabId, { sensitiveActionAlerts, onDeviceModel, origin });
+  } = useAgentSession(activeTabId, {
+    sensitiveActionAlerts,
+    onDeviceModel,
+    backendMode,
+    codexConfig: {
+      port: codexPort,
+      model: codexModel,
+      effort: codexReasoningEffort,
+    },
+    origin,
+  });
   // The agent is waiting on the user: to allow a tool, or to keep using tools.
   const waitingOnUser = Boolean(pendingPermission || pendingCheckpoint);
 
@@ -169,6 +262,15 @@ export function App() {
             onDeviceModelSupported={onDeviceModelSupported}
             responseInProgress={anyBusy}
             onClose={() => setShowSettings(false)}
+            backendMode={backendMode}
+            onChangeBackendMode={handleChangeBackendMode}
+            codexPort={codexPort}
+            onChangeCodexPort={handleChangeCodexPort}
+            codexModel={codexModel}
+            onChangeCodexModel={handleChangeCodexModel}
+            codexReasoningEffort={codexReasoningEffort}
+            onChangeCodexReasoningEffort={handleChangeCodexReasoningEffort}
+            availableModels={availableModels}
           />
         ) : (
           <section className="view chat-view">
