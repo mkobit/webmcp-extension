@@ -65,9 +65,11 @@ const EMPTY_TAB_SESSION: TabSessionState = Object.freeze({
  * are mutated in place, the way the refs they replace were: a turn reads them
  * long after the render that started it.
  */
-interface TabSessionInternals {
+export interface TabSessionInternals {
   /** Identifies the conversation to whichever backend is holding it. */
   chatId?: string;
+  codexThreadId?: string;
+  codexTurnId?: string;
   abortController: AbortController | null;
   /** The activity of the turn in flight, for the message it ends up on. */
   turnLogs: ActivityEntry[];
@@ -157,7 +159,7 @@ class TabSessionStore {
    * Resets a tab's conversation state and releases its backend session while
    * keeping the tab's discovered tools and page metadata intact.
    */
-  resetChat(tabId: number, options: { onDevice?: boolean } = {}): void {
+  resetChat(tabId: number, options: { onDevice?: boolean; codex?: boolean } = {}): void {
     const internals = this.internals.get(tabId);
     if (internals) {
       internals.abortController?.abort();
@@ -166,6 +168,8 @@ class TabSessionStore {
         endChat(internals.chatId, options);
         internals.chatId = undefined;
       }
+      internals.codexThreadId = undefined;
+      internals.codexTurnId = undefined;
       internals.turnLogs = [];
     }
     clearSessionToolPermissions(tabId);
@@ -185,11 +189,13 @@ class TabSessionStore {
    * conversation is ended on the backend too, so a chat nothing can reach
    * again does not sit there holding context.
    */
-  remove(tabId: number, options: { onDevice?: boolean } = {}): void {
+  remove(tabId: number, options: { onDevice?: boolean; codex?: boolean } = {}): void {
     const internals = this.internals.get(tabId);
     if (internals) {
       internals.abortController?.abort();
       if (internals.chatId) endChat(internals.chatId, options);
+      internals.codexThreadId = undefined;
+      internals.codexTurnId = undefined;
     }
     clearSessionToolPermissions(tabId);
     const existed = this.states.delete(tabId);
