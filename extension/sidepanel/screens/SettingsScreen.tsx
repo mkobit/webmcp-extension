@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useId, useState } from 'react';
-import { CloseIcon, DeviceIcon, ShieldIcon } from '../components/Icons.js';
+import { CloseIcon, DeviceIcon, RefreshIcon, ShieldIcon } from '../components/Icons.js';
 import { Switch } from '../components/Switch.js';
 import type { BackendMode } from '../services/codexSettings.js';
 import type { CodexModel } from '../types/codex.js';
@@ -28,6 +28,9 @@ export interface SettingsScreenProps {
   codexReasoningEffort?: string;
   onChangeCodexReasoningEffort?: (effort: string) => void;
   availableModels?: CodexModel[];
+  onRefreshModels?: () => void;
+  isLoadingModels?: boolean;
+  modelsError?: string | null;
 }
 
 /**
@@ -51,6 +54,9 @@ export function SettingsScreen({
   codexReasoningEffort = '',
   onChangeCodexReasoningEffort,
   availableModels = [],
+  onRefreshModels,
+  isLoadingModels = false,
+  modelsError = null,
 }: SettingsScreenProps) {
   const alertsDescId = useId();
   const modelDescId = useId();
@@ -231,7 +237,7 @@ export function SettingsScreen({
                     className="settings-select"
                     aria-label="Codex model"
                     value={codexModel}
-                    disabled={responseInProgress}
+                    disabled={responseInProgress || isLoadingModels}
                     onChange={(e) => onChangeCodexModel?.(e.target.value)}
                   >
                     {availableModels.length === 0 ? (
@@ -244,8 +250,40 @@ export function SettingsScreen({
                       ))
                     )}
                   </select>
+                  {onRefreshModels && (
+                    <button
+                      type="button"
+                      className="settings-refresh-btn"
+                      onClick={onRefreshModels}
+                      disabled={responseInProgress || isLoadingModels}
+                      aria-label="Refresh Codex models"
+                      title="Refresh models"
+                    >
+                      <RefreshIcon size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {modelsError && (
+                <div className="settings-item settings-item--error" role="alert">
+                  <div className="settings-item__content">
+                    <p className="settings-error-text">{modelsError}</p>
+                  </div>
+                  {onRefreshModels && (
+                    <div className="settings-item__control">
+                      <button
+                        type="button"
+                        className="settings-retry-btn"
+                        onClick={onRefreshModels}
+                        disabled={responseInProgress || isLoadingModels}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {hasReasoning && (
                 <div className="settings-item">

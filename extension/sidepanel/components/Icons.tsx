@@ -80,6 +80,7 @@ export const ArrowDownIcon = (p: IconProp) => <SymbolIcon name="keyboard_arrow_d
 export const ArrowUpIcon = (p: IconProp) => <SymbolIcon name="keyboard_arrow_up" size={16} {...p} />;
 export const ShieldIcon = (p: IconProp) => <SymbolIcon name="shield" size={20} {...p} />;
 export const DeviceIcon = (p: IconProp) => <SymbolIcon name="devices" size={20} {...p} />;
+export const RefreshIcon = (p: IconProp) => <SymbolIcon name="refresh" size={18} {...p} />;
 
 export function PlayArrowIcon({ size = 14, color = 'currentColor' }: LogoProps) {
   return (

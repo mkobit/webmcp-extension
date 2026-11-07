@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ChatBubble } from './components/ChatBubble.js';
 import { WebMCPToolsDialogue } from './components/WebMCPToolsDialogue.js';
 import { IPHPopover } from './components/IPHPopover.js';
@@ -73,32 +73,49 @@ export function App() {
     () => getCodexReasoningEffort()
   );
   const [availableModels, setAvailableModels] = useState<CodexModel[]>([]);
+  const [isLoadingCodexModels, setIsLoadingCodexModels] = useState<boolean>(false);
+  const [codexModelsError, setCodexModelsError] = useState<string | null>(null);
+
+  const codexModelRef = useRef(codexModel);
+  useEffect(() => {
+    codexModelRef.current = codexModel;
+  }, [codexModel]);
+
+  const fetchCodexModels = useCallback(async () => {
+    if (backendMode !== 'codex') return;
+    setIsLoadingCodexModels(true);
+    setCodexModelsError(null);
+    const client = getCodexClient();
+    try {
+      if (!client.isConnected() || client.getPort() !== codexPort) {
+        await client.connect(codexPort);
+      }
+      const res = await client.listModels();
+      setAvailableModels(res.data);
+      if (res.data.length > 0 && !codexModelRef.current) {
+        const defaultModel = res.data.find((m) => m.isDefault) ?? res.data[0];
+        setCodexModelState(defaultModel.id);
+        setCodexModel(defaultModel.id);
+      }
+      setCodexModelsError(null);
+    } catch (error) {
+      console.warn('[WebMCP] Failed to load Codex models:', error);
+      const msg = error instanceof Error ? error.message : String(error);
+      setCodexModelsError(msg);
+    } finally {
+      setIsLoadingCodexModels(false);
+    }
+  }, [backendMode, codexPort]);
 
   useEffect(() => {
-    if (backendMode !== 'codex') return;
-    let cancelled = false;
-    const client = getCodexClient();
-    (async () => {
-      try {
-        if (!client.isConnected() || client.getPort() !== codexPort) {
-          await client.connect(codexPort);
-        }
-        const res = await client.listModels();
-        if (cancelled) return;
-        setAvailableModels(res.data);
-        if (res.data.length > 0 && !codexModel) {
-          const defaultModel = res.data.find((m) => m.isDefault) ?? res.data[0];
-          setCodexModelState(defaultModel.id);
-          setCodexModel(defaultModel.id);
-        }
-      } catch {
-        // Keep availableModels as is or empty if connection failed
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [backendMode, codexPort]);
+    void fetchCodexModels();
+  }, [fetchCodexModels]);
+
+  useEffect(() => {
+    if (showSettings && backendMode === 'codex') {
+      void fetchCodexModels();
+    }
+  }, [showSettings, backendMode, fetchCodexModels]);
 
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
 
@@ -271,6 +288,9 @@ export function App() {
             codexReasoningEffort={codexReasoningEffort}
             onChangeCodexReasoningEffort={handleChangeCodexReasoningEffort}
             availableModels={availableModels}
+            onRefreshModels={fetchCodexModels}
+            isLoadingModels={isLoadingCodexModels}
+            modelsError={codexModelsError}
           />
         ) : (
           <section className="view chat-view">
