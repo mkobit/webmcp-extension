@@ -94,6 +94,7 @@ export function staticFiles(rootDir: string, outDir: string): Array<[string, str
   const extensionDir = path.join(rootDir, 'extension');
   return [
     [path.join(extensionDir, 'manifest.json'), path.join(outDir, 'manifest.json')],
+    [path.join(extensionDir, 'rules.json'), path.join(outDir, 'rules.json')],
     [path.join(extensionDir, 'icons'), path.join(outDir, 'icons')],
     [path.join(extensionDir, 'sidepanel/index.html'), path.join(outDir, 'sidepanel/index.html')],
   ];
