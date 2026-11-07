@@ -280,3 +280,54 @@ test('CodexClient handles malformed JSON and disconnect errors cleanly', async (
     restore();
   }
 });
+
+test('CodexClient reconnects when connect is called with a different port', async () => {
+  const restore = setupMockWebSocket();
+  try {
+    const client = new CodexClient();
+    const connect1 = client.connect(45123);
+    const ws1 = MockWebSocket.instances[0];
+    ws1.simulateOpen();
+    const init1 = JSON.parse(ws1.sent[0]);
+    ws1.simulateMessage({ jsonrpc: '2.0', id: init1.id, result: {} });
+    await connect1;
+
+    assert.equal(client.isConnected(), true);
+    assert.equal(client.getPort(), 45123);
+
+    // Call connect with new port
+    const connect2 = client.connect(45124);
+    assert.equal(ws1.readyState, 3); // closed
+
+    const ws2 = MockWebSocket.instances[1];
+    assert.ok(ws2);
+    assert.equal(ws2.url, 'ws://127.0.0.1:45124');
+    ws2.simulateOpen();
+    const init2 = JSON.parse(ws2.sent[0]);
+    ws2.simulateMessage({ jsonrpc: '2.0', id: init2.id, result: {} });
+    await connect2;
+
+    assert.equal(client.isConnected(), true);
+    assert.equal(client.getPort(), 45124);
+  } finally {
+    restore();
+  }
+});
+
+test('CodexClient connect throws UserFacingError when connection fails', async () => {
+  const restore = setupMockWebSocket();
+  try {
+    const client = new CodexClient();
+    const connectPromise = client.connect(45123);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateError(new Error('Connection refused'));
+    ws.close();
+
+    await assert.rejects(
+      connectPromise,
+      (err: any) => err.name === 'UserFacingError' && /Cannot connect to Codex app-server/i.test(err.message)
+    );
+  } finally {
+    restore();
+  }
+});

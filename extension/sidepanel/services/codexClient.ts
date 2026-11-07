@@ -9,6 +9,7 @@ import type {
   JsonRpcRequest,
   JsonRpcResponse,
 } from '../types/codex.js';
+import { UserFacingError } from '../types/index.js';
 
 type NotificationHandler = (params: any) => void;
 type ServerRequestHandler = (id: number | string, params: any) => Promise<any>;
@@ -22,9 +23,11 @@ export class CodexClient {
   private socket: WebSocket | null = null;
   private nextRequestId = 1;
   private initialized = false;
+  private currentPort: number | null = null;
   private pendingRequests = new Map<number | string, PendingRequest>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private serverRequestHandlers = new Map<string, ServerRequestHandler>();
+  private disconnectHandlers = new Set<(error: Error) => void>();
 
   isConnected(): boolean {
     return (
@@ -34,12 +37,20 @@ export class CodexClient {
     );
   }
 
+  getPort(): number | null {
+    return this.currentPort;
+  }
+
   async connect(port: number): Promise<void> {
+    if (this.isConnected() && this.currentPort === port) {
+      return;
+    }
     this.disconnect();
 
     const url = `ws://127.0.0.1:${port}`;
     const ws = new WebSocket(url);
     this.socket = ws;
+    this.currentPort = port;
 
     await new Promise<void>((resolve, reject) => {
       let openHandled = false;
@@ -74,14 +85,22 @@ export class CodexClient {
       ws.onerror = (_event: any) => {
         if (!openHandled) {
           cleanupOpenListeners();
-          reject(new Error(`Failed to connect to Codex app-server on ${url}`));
+          reject(
+            new UserFacingError(
+              `Cannot connect to Codex app-server on ${url}. Please ensure 'codex app-server --listen ${url}' is running.`
+            )
+          );
         }
       };
 
       ws.onclose = (_event: any) => {
         if (!openHandled) {
           cleanupOpenListeners();
-          reject(new Error(`WebSocket connection closed before opening on ${url}`));
+          reject(
+            new UserFacingError(
+              `Cannot connect to Codex app-server on ${url}. Please ensure 'codex app-server --listen ${url}' is running.`
+            )
+          );
         }
       };
     });
@@ -89,6 +108,7 @@ export class CodexClient {
 
   disconnect(): void {
     this.initialized = false;
+    this.currentPort = null;
     if (this.socket) {
       const ws = this.socket;
       this.socket = null;
@@ -147,6 +167,13 @@ export class CodexClient {
       if (this.serverRequestHandlers.get(method) === handler) {
         this.serverRequestHandlers.delete(method);
       }
+    };
+  }
+
+  onDisconnect(handler: (error: Error) => void): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => {
+      this.disconnectHandlers.delete(handler);
     };
   }
 
@@ -274,5 +301,12 @@ export class CodexClient {
       pending.reject(error);
     }
     this.pendingRequests.clear();
+    for (const handler of this.disconnectHandlers) {
+      try {
+        handler(error);
+      } catch {
+        // Ignore handler error
+      }
+    }
   }
 }

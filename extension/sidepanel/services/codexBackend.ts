@@ -90,6 +90,15 @@ function ensureClientHandlers(client: CodexClient): void {
     }
     return handleCodexToolCall(params, ctx.toolOptions);
   });
+
+  client.onDisconnect((error: Error) => {
+    for (const [threadId, ctx] of activeTurnContexts.entries()) {
+      activeTurnContexts.delete(threadId);
+      const internals = tabSessions.getInternals(ctx.tabId);
+      internals.codexTurnId = undefined;
+      ctx.reject(error);
+    }
+  });
 }
 
 export async function interruptCodexTurn(
@@ -118,7 +127,7 @@ export async function sendCodexChatTurn(
   const client = options.client ?? getCodexClient();
   const port = options.port ?? 45123;
 
-  if (!client.isConnected()) {
+  if (!client.isConnected() || client.getPort() !== port) {
     await client.connect(port);
   }
 
