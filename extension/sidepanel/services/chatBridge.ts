@@ -5,27 +5,35 @@
 
 import { postToBackend, streamChat } from './backendBridge.js';
 import { getSpotlightFence, resetOnDeviceChat, sendOnDeviceChat } from './promptApiBackend.js';
+import { sendCodexChatTurn, type CodexChatTurnOptions } from './codexBackend.js';
 import { type ChatTurnRequest, type ChatTurnResponse } from '../types/index.js';
 
 /**
  * Routes a chat turn to where the user asked for it to run: the browser's
- * built-in model through the Prompt API, or the local server. Both take the
- * same request and answer with the same shape, so the agent loop does not care
- * which one runs. Both stream: `onText` gets the text of the turn so far as it
- * is written.
+ * built-in model through the Prompt API, the local Codex app-server, or the
+ * companion server. All stream: `onText` gets the text of the turn so far as
+ * it is written.
  */
 export async function sendChatTurn(
   request: ChatTurnRequest,
   options: {
     signal?: AbortSignal;
     onDevice?: boolean;
+    backend?: 'companion' | 'onDevice' | 'codex';
+    codexOptions?: CodexChatTurnOptions;
     onText?: (text: string) => void;
     /** For a checkpoint summary, return the first tool request without continuing the model loop. */
     stopOnToolCall?: boolean;
   } = {}
 ): Promise<ChatTurnResponse> {
-  const { signal, onDevice = false, onText, stopOnToolCall } = options;
-  if (onDevice) {
+  const { signal, onDevice = false, backend, codexOptions, onText, stopOnToolCall } = options;
+  if (backend === 'codex' || codexOptions) {
+    if (!codexOptions) {
+      throw new Error('Codex backend requires codexOptions.');
+    }
+    return sendCodexChatTurn(request, { ...codexOptions, signal, onText });
+  }
+  if (backend === 'onDevice' || onDevice) {
     // A new message with no chatId starts a new chat. Without an id here, the
     // on-device backend would carry on with whichever tab's chat it holds.
     // The server makes its own id, so only this path needs one.
@@ -53,7 +61,13 @@ export function getSpotlighting(onDevice = false): string | undefined {
  * Ends one conversation on the backend that holds it, so it stops taking up
  * context there. Other tabs' conversations are left alone.
  */
-export function endChat(chatId: string, { onDevice = false }: { onDevice?: boolean } = {}): void {
+export function endChat(
+  chatId: string,
+  { onDevice = false, codex = false }: { onDevice?: boolean; codex?: boolean } = {}
+): void {
+  if (codex) {
+    return;
+  }
   if (onDevice) {
     resetOnDeviceChat(chatId);
   } else {
@@ -62,7 +76,12 @@ export function endChat(chatId: string, { onDevice = false }: { onDevice?: boole
 }
 
 /** Ends every conversation on one backend. */
-export function endAllChats({ onDevice = false }: { onDevice?: boolean } = {}): void {
+export function endAllChats(
+  { onDevice = false, codex = false }: { onDevice?: boolean; codex?: boolean } = {}
+): void {
+  if (codex) {
+    return;
+  }
   if (onDevice) {
     resetOnDeviceChat();
   } else {
