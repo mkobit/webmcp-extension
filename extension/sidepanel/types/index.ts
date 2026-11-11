@@ -43,16 +43,31 @@ export interface ChatTurnRequest {
   tools?: ToolDeclaration[];
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface ChatTurnResponse {
   chatId?: string;
   text?: string;
   functionCalls?: Array<{ id?: string; name: string; args: Record<string, unknown> }>;
+  tokenUsage?: TokenUsage;
 }
 
 export interface ActivityEntry {
   id: number;
   name: string;
   done: boolean;
+  status?: 'running' | 'success' | 'error';
+  durationMs?: number;
+  frameId?: number;
+  frameOrigin?: string;
+  arguments?: Record<string, unknown>;
+  resultSummary?: string;
+  rawResult?: unknown;
+  errorMessage?: string;
 }
 
 export interface ChatMessage {
@@ -62,6 +77,17 @@ export interface ChatMessage {
   activityLogs?: ActivityEntry[];
   /** Written by the on-device model rather than the backend server. */
   onDevice?: boolean;
+  tokenUsage?: TokenUsage;
+}
+
+export interface SessionTraceExport {
+  version: 1;
+  exportedAt: string;
+  origin: string;
+  sessionTokenUsage?: TokenUsage;
+  messages: ChatMessage[];
+  activityLog: ActivityEntry[];
+  tools: WebMCPTool[];
 }
 
 /**
