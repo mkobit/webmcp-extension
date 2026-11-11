@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { TokenUsage } from './index.js';
+
 export interface JsonRpcRequest<T = unknown> {
   jsonrpc: '2.0';
   id: number | string;
@@ -120,6 +122,7 @@ export interface CodexTurnCompletedNotification {
     status?: string;
     error?: unknown;
   };
+  usage?: TokenUsage;
 }
 
 export interface CodexAgentMessageDeltaNotification {
