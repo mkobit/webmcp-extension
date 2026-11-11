@@ -30,3 +30,24 @@ export async function getAllFrameOrigins(tabId: number): Promise<string[]> {
     return [];
   }
 }
+
+/**
+ * Look up the origin of a specific frame in a tab.
+ * Frames without a web origin (about:blank, data: URLs) return undefined.
+ */
+export async function getFrameOrigin(tabId: number, frameId: number): Promise<string | undefined> {
+  if (typeof chrome === 'undefined' || !chrome.webNavigation?.getFrame) {
+    return undefined;
+  }
+  try {
+    const frame = await chrome.webNavigation.getFrame({ tabId, frameId });
+    if (!frame?.url) {
+      return undefined;
+    }
+    const origin = new URL(frame.url).origin;
+    return origin !== 'null' ? origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
