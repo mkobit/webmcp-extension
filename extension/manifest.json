@@ -9,7 +9,8 @@
     "scripting",
     "webNavigation",
     "favicon",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
