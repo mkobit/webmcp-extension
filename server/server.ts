@@ -16,6 +16,8 @@ import { buildSystemInstruction } from '../shared/systemPrompt.ts';
 import { describeModel, loadProviders } from './providers.ts';
 import { appendTurnMessages, buildTools, hasPendingToolCalls } from './tools.ts';
 import type { ToolDeclaration, ToolResponse } from './tools.ts';
+import { McpServer } from './mcp/mcpServer.ts';
+import { AcpClient } from './acp/acpClient.ts';
 import {
   loadDotEnv,
   getEnv,
@@ -33,6 +35,14 @@ const envPath = path.resolve(__dirname, '../.env');
 const env = loadDotEnv(envPath);
 const authToken = ensureAuthToken(env, envPath);
 const allowedExtensionId = getEnv(env, 'ALLOWED_EXTENSION_ID');
+export const HOST = getEnv(env, 'HOST') || '127.0.0.1';
+export const PORT = getEnv(env, 'PORT') || '3000';
+
+export const mcpServer = new McpServer();
+const acpCommand = getEnv(env, 'ACP_COMMAND');
+const acpSocketPath = getEnv(env, 'ACP_SOCKET_PATH');
+const acpPort = getEnv(env, 'ACP_PORT');
+let activeAcpClient: AcpClient | null = null;
 
 /**
  * Which provider and model answer a turn is settled here, from `.env`, and is
@@ -137,9 +147,10 @@ interface ChatRequestBody {
   message?: unknown;
   toolResponses?: ToolResponse[];
   tools?: ToolDeclaration[];
+  backend?: string;
 }
 
-function parseJsonBody(req: http.IncomingMessage): Promise<ChatRequestBody> {
+function parseJsonBody<T = ChatRequestBody>(req: http.IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -171,7 +182,7 @@ function parseJsonBody(req: http.IncomingMessage): Promise<ChatRequestBody> {
       settled = true;
       const body = Buffer.concat(chunks).toString('utf-8');
       try {
-        resolve(body ? JSON.parse(body) : {});
+        resolve(body ? JSON.parse(body) : ({} as T));
       } catch {
         reject(httpError(400, 'Request body is not valid JSON.'));
       }
@@ -345,6 +356,52 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/api/mcp' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+      res.socket?.setNoDelay(true);
+      res.write(': mcp-sse-connected\n\n');
+      return;
+    }
+
+    if (url.pathname === '/api/mcp' && req.method === 'POST') {
+      const body = (await parseJsonBody(req)) as import('./acp/types.ts').JsonRpcRequest;
+      const rpcResponse = await mcpServer.handleJsonRpc(body);
+      if (rpcResponse) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(rpcResponse));
+      } else {
+        res.writeHead(204);
+        res.end();
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/mcp/tools' && req.method === 'POST') {
+      const { tools } = await parseJsonBody<{ tools?: ToolDeclaration[] }>(req);
+      if (Array.isArray(tools)) {
+        mcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, count: mcpServer.getTools().length }));
+      return;
+    }
+
+    if (url.pathname === '/api/mcp/confirm' && req.method === 'POST') {
+      const { callId, approved, reason } = await parseJsonBody<{
+        callId?: string;
+        approved?: boolean;
+        reason?: string;
+      }>(req);
+      const resolved = mcpServer.resolveApproval(String(callId ?? ''), { approved: Boolean(approved), reason });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: resolved }));
+      return;
+    }
+
     if (url.pathname === '/api/chat/reset' && req.method === 'POST') {
       const { chatId } = await parseJsonBody(req);
       if (chatId) {
@@ -358,7 +415,64 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/chat' && req.method === 'POST') {
-      const { message, toolResponses, tools, chatId } = await parseJsonBody(req);
+      const { message, toolResponses, tools, chatId, backend } = await parseJsonBody(req);
+
+      if (tools && Array.isArray(tools)) {
+        mcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
+      }
+
+      const isAcp = backend === 'companion-acp' || (getEnv(env, 'BACKEND') === 'acp' && backend !== 'provider');
+
+      if (isAcp) {
+        const currentChatId = chatId || randomUUID();
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+        res.socket?.setNoDelay(true);
+
+        try {
+          if (!activeAcpClient || !activeAcpClient.connected) {
+            const cmd = acpCommand || 'agy';
+            const args = cmd === 'agy' ? ['acp'] : [];
+            activeAcpClient = new AcpClient({
+              command: acpSocketPath || acpPort ? undefined : cmd,
+              args,
+              socketPath: acpSocketPath || undefined,
+              port: acpPort ? Number(acpPort) : undefined,
+            });
+            await activeAcpClient.connect();
+            await activeAcpClient.initialize();
+            await activeAcpClient.newSession({
+              cwd: process.cwd(),
+              mcpServers: [
+                {
+                  name: 'webmcp',
+                  url: `http://127.0.0.1:${PORT}/api/mcp`,
+                },
+              ],
+            });
+          }
+
+          let fullText = '';
+          await activeAcpClient.prompt(String(message ?? ''), (update) => {
+            const chunkText = update.delta || update.content;
+            if (chunkText) {
+              fullText += chunkText;
+              res.write(JSON.stringify({ delta: chunkText }) + '\n');
+            }
+          });
+
+          res.write(JSON.stringify({ done: true, chatId: currentChatId, text: fullText, functionCalls: [] }) + '\n');
+          res.end();
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          res.write(JSON.stringify({ error: errMsg }) + '\n');
+          res.end();
+        }
+        return;
+      }
 
       if (!languageModel) {
         const problem = providerConfig.problem || 'No model is configured on the backend server.';
@@ -563,8 +677,6 @@ const server = http.createServer(async (req, res) => {
 // README documents. Do not add lowercase fallbacks: scripts/build.ts reads the
 // uppercase keys, so accepting both here would let the server and the bundled
 // side panel disagree about the port with nothing to signal it.
-const HOST = getEnv(env, 'HOST') || '127.0.0.1';
-const PORT = getEnv(env, 'PORT') || '3000';
 server.listen(Number(PORT), HOST, () => {
   console.log(`🚀 Backend model server listening on http://${HOST}:${PORT}`);
   console.log(

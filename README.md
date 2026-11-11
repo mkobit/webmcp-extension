@@ -14,8 +14,9 @@ how WebMCP tools work on your site.
 
 - **Finds tools on the page.** Reads `document.modelContext.getTools()` and listens for `ontoolchange`, in the top page and in same-origin and cross-origin iframes. Tools that appear during a conversation (for example after a navigation) are picked up before the next model turn. A cross-origin iframe's tools only show up if the page embeds it with `allow="tools"` and the iframe registers them with `exposedTo` set to the page's origin.
 - **Chats with a model that can call those tools.** The side panel sends your prompt to a model. When the model calls a tool, the side panel asks for permission if needed, runs the tool on the page and sends the result back.
-- **Two backends:**
+- **Three backends:**
   - **Local server** (default): a small Node.js server that talks to Google, OpenAI, Anthropic or Ollama through the [AI SDK](https://ai-sdk.dev). API keys stay on the local server.
+  - **Agent Client Protocol (ACP)**: connects the local server to local coding agent runtimes such as Google Antigravity (`agy acp`) or OpenAI Codex (`codex-acp`). Serves in-page WebMCP tools to the agent via an in-process MCP endpoint (`/api/mcp`) without raw provider API keys.
   - **On-device model**: runs in the browser through the [Prompt API](https://developer.mozilla.org/docs/Web/API/Prompt_API). No server and no API key, and page data stays on your device. It requires `chrome://flags/#prompt-api-tool-use` to be enabled.
 - **Streams replies** as they are written, on both backends.
 - **One conversation per tab.** Each tab has its own chat and permission prompts. Switching tabs switches chats, and closing a tab ends its chat.
@@ -181,6 +182,29 @@ OLLAMA_HOST=http://127.0.0.1:11434/v1
 The `openai` provider uses the chat completions API, which every
 OpenAI-compatible server supports. So vLLM, LiteLLM or your own gateway works
 through `openai` with `OPENAI_BASE_URL`.
+
+---
+
+## Agent Client Protocol (ACP) backend
+
+Developers running local ACP agent CLIs (such as Google Antigravity `agy acp` or OpenAI Codex `codex-acp`) can connect the companion server directly to their agent session without needing raw provider API keys:
+
+```env
+BACKEND=acp
+ACP_COMMAND=agy
+```
+
+When configured:
+1. The companion server acts as an ACP client to the local agent process.
+2. The companion server starts an in-process MCP server at `http://127.0.0.1:3000/api/mcp` to expose active tab WebMCP tools.
+3. For agents requiring stdio MCP servers, `node server/mcp-relay.js` acts as a zero-dependency relay.
+4. Security guardrails: the client advertises `clientCapabilities: { fs: false, terminal: false }` and denies host command execution requests. Consequential tools (`consequentialHint: true`) require approval in the side panel.
+
+To verify interoperability with local agents:
+
+```bash
+node scripts/demo-acp-interop.ts
+```
 
 ---
 
