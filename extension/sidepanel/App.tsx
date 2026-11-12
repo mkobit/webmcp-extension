@@ -31,6 +31,7 @@ import { EditSquareIcon } from './components/Icons.js';
 import { useActiveTabId } from './hooks/useActiveTabId.js';
 import { useActiveTabTools } from './hooks/useActiveTabTools.js';
 import { useAgentSession } from './hooks/useAgentSession.js';
+import { flushActiveSession } from './services/tabSessionStore.js';
 import { type ContextUsage, isPromptApiSupported, prepareOnDeviceModel } from './services/promptApiBackend.js';
 
 /** Starts the on-device model download; a failure only means it starts later, with the first message. */
@@ -171,6 +172,21 @@ export function App() {
   // tab is in front and shows that tab's page and conversation.
   const activeTabId = useActiveTabId({ onDeviceModel });
   const { tools, domain, origin, favicon, statusMsg } = useActiveTabTools(activeTabId);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (activeTabId != null) {
+        void flushActiveSession(activeTabId);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (activeTabId != null) {
+        void flushActiveSession(activeTabId);
+      }
+    };
+  }, [activeTabId]);
   const {
     userPrompt,
     setUserPrompt,

@@ -403,3 +403,80 @@ test('sendCodexChatTurn extracts tokenUsage from turn/completed notification', a
     restore();
   }
 });
+
+test('sendCodexChatTurn recovers from stale thread by starting a fresh thread', async () => {
+  const restore = setupMockWebSocket();
+  try {
+    const client = new CodexClient();
+    const connectPromise = client.connect(45123);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+    await connectPromise;
+
+    const tabId = 304;
+    tabSessions.resetChat(tabId);
+    // Simulate restored stale thread ID
+    tabSessions.getInternals(tabId).codexThreadId = 'stale-thread-999';
+
+    const turnPromise = sendCodexChatTurn(
+      { message: 'Turn on stale thread' },
+      { tabId, client, tools: [], model: 'gpt-6.1-sol', effort: 'medium' }
+    );
+
+    // Initial turn/start with stale thread
+    const turn1Req = JSON.parse(ws.sent[1]);
+    assert.equal(turn1Req.method, 'turn/start');
+    assert.equal(turn1Req.params.threadId, 'stale-thread-999');
+
+    // Server returns thread not found error
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: turn1Req.id,
+      error: { code: -32000, message: 'Thread not found: stale-thread-999' },
+    });
+
+    // Wait microtask for recovery thread/start
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Client should have requested thread/start
+    const recoverThreadReq = JSON.parse(ws.sent[2]);
+    assert.equal(recoverThreadReq.method, 'thread/start');
+
+    // Respond with fresh thread
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: recoverThreadReq.id,
+      result: { thread: { id: 'fresh-thread-001' } },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Client sends turn/start with fresh thread
+    const recoverTurnReq = JSON.parse(ws.sent[3]);
+    assert.equal(recoverTurnReq.method, 'turn/start');
+    assert.equal(recoverTurnReq.params.threadId, 'fresh-thread-001');
+
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: recoverTurnReq.id,
+      result: { turn: { id: 'fresh-turn-001' } },
+    });
+
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: {
+        threadId: 'fresh-thread-001',
+        turn: { id: 'fresh-turn-001' },
+      },
+    });
+
+    const res = await turnPromise;
+    assert.equal(res.chatId, 'fresh-thread-001');
+    assert.equal(tabSessions.getInternals(tabId).codexThreadId, 'fresh-thread-001');
+  } finally {
+    restore();
+  }
+});

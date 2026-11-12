@@ -68,11 +68,15 @@ export function useActiveTabTools(activeTabId: number | null): UseActiveTabTools
     const info = await getTabInfo(tabId);
     const stillTracked = tabId === activeTabIdRef.current || tabSessions.hasConversation(tabId);
     if (info && stillTracked && tabSeqRef.current.get(tabId) === seq) {
+      const origin = originOfUrl(info.url || '');
       tabSessions.update(tabId, {
         domain: info.domain,
-        origin: originOfUrl(info.url || ''),
+        origin,
         favicon: info.favicon,
       });
+      if (origin && !tabSessions.hasConversation(tabId)) {
+        void tabSessions.restoreActiveSession(tabId, origin);
+      }
     }
 
     // `requestTabTools` swallows Chrome IPC rejections on tabs without a content
