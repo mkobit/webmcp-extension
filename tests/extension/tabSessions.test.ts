@@ -35,6 +35,9 @@ interface TestChrome {
   sent: SentMessage[];
   /** The tab in front, which the user can move while a turn is running. */
   activeTabId: number;
+  storage: Map<string, unknown>;
+  tabRemovedListeners: Set<(tabId: number) => void>;
+  triggerTabRemoved: (tabId: number) => void;
   restore: () => void;
 }
 
@@ -44,9 +47,16 @@ interface TestChrome {
  */
 function installTestChrome(): TestChrome {
   const original = globalThis.chrome;
+  const storage = new Map<string, unknown>();
+  const tabRemovedListeners = new Set<(tabId: number) => void>();
   const state: TestChrome = {
     sent: [],
     activeTabId: 1,
+    storage,
+    tabRemovedListeners,
+    triggerTabRemoved: (tabId: number) => {
+      for (const listener of tabRemovedListeners) listener(tabId);
+    },
     restore: () => {
       globalThis.chrome = original;
     },
@@ -68,7 +78,10 @@ function installTestChrome(): TestChrome {
       },
       onUpdated: { addListener: () => {}, removeListener: () => {} },
       onActivated: { addListener: () => {}, removeListener: () => {} },
-      onRemoved: { addListener: () => {}, removeListener: () => {} },
+      onRemoved: {
+        addListener: (fn: (tabId: number) => void) => tabRemovedListeners.add(fn),
+        removeListener: (fn: (tabId: number) => void) => tabRemovedListeners.delete(fn),
+      },
     } as unknown as typeof chrome.tabs,
     runtime: {
       onMessage: { addListener: () => {}, removeListener: () => {} },
@@ -77,6 +90,44 @@ function installTestChrome(): TestChrome {
     webNavigation: {
       getAllFrames: async () => [{ frameId: 0, url: 'https://example.com' }],
     } as unknown as typeof chrome.webNavigation,
+    storage: {
+      local: {
+        get: async (keys?: string | string[] | Record<string, unknown> | null) => {
+          if (!keys) {
+            return Object.fromEntries(storage.entries());
+          }
+          if (typeof keys === 'string') {
+            return storage.has(keys) ? { [keys]: storage.get(keys) } : {};
+          }
+          if (Array.isArray(keys)) {
+            const result: Record<string, unknown> = {};
+            for (const key of keys) {
+              if (storage.has(key)) result[key] = storage.get(key);
+            }
+            return result;
+          }
+          const result: Record<string, unknown> = { ...keys };
+          for (const key of Object.keys(keys)) {
+            if (storage.has(key)) result[key] = storage.get(key);
+          }
+          return result;
+        },
+        set: async (items: Record<string, unknown>) => {
+          for (const [key, value] of Object.entries(items)) {
+            storage.set(key, value);
+          }
+        },
+        remove: async (keys: string | string[]) => {
+          const list = Array.isArray(keys) ? keys : [keys];
+          for (const key of list) {
+            storage.delete(key);
+          }
+        },
+        clear: async () => {
+          storage.clear();
+        },
+      },
+    } as unknown as typeof chrome.storage,
   } as typeof chrome;
 
   return state;
@@ -1378,6 +1429,27 @@ test('when the on-device model reaches the limit first, tool-only history stays 
     console.warn = originalWarn;
     resetTabSessions();
     model.restore();
+    browser.restore();
+  }
+});
+
+test('chrome.storage.local mock supports get, set, remove, and clear', async () => {
+  const browser = installTestChrome();
+  try {
+    await chrome.storage.local.set({ key1: 'val1', key2: { count: 2 } });
+    assert.deepEqual(await chrome.storage.local.get('key1'), { key1: 'val1' });
+    assert.deepEqual(await chrome.storage.local.get(['key1', 'key2']), { key1: 'val1', key2: { count: 2 } });
+    assert.deepEqual(await chrome.storage.local.get({ key1: 'fallback', key3: 'default' }), {
+      key1: 'val1',
+      key3: 'default',
+    });
+
+    await chrome.storage.local.remove('key1');
+    assert.deepEqual(await chrome.storage.local.get('key1'), {});
+
+    await chrome.storage.local.clear();
+    assert.deepEqual(await chrome.storage.local.get(), {});
+  } finally {
     browser.restore();
   }
 });
