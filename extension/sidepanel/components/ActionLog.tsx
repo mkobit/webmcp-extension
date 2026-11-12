@@ -28,6 +28,97 @@ export function formatLogLabel(name: string): string {
   return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
+export interface ActionLogCardProps {
+  entry: ActivityEntry;
+  defaultExpanded?: boolean;
+}
+
+/**
+ * Collapsible card for an individual tool execution step.
+ */
+export function ActionLogCard({ entry, defaultExpanded = false }: ActionLogCardProps) {
+  const [isExpanded, setIsExpanded] = useState<boolean>(defaultExpanded);
+  const detailsId = useId();
+
+  const renderStatusIcon = () => {
+    if (entry.status === 'error' || entry.errorMessage) {
+      return (
+        <span className="action-log__item-error" aria-label="Failed">
+          ✕
+        </span>
+      );
+    }
+    if (entry.status === 'success' || entry.done) {
+      return (
+        <span className="action-log__item-check" aria-label="Completed">
+          ✓
+        </span>
+      );
+    }
+    return <span className="action-log__item-circle" aria-label="Running" />;
+  };
+
+  return (
+    <div className={`action-log__card${isExpanded ? ' action-log__card--expanded' : ''}`}>
+      <button
+        type="button"
+        className="action-log__card-header"
+        onClick={() => setIsExpanded((prev) => !prev)}
+        aria-expanded={isExpanded}
+        aria-controls={detailsId}
+      >
+        <div className="action-log__card-header-left">
+          <div className="action-log__item-icon">{renderStatusIcon()}</div>
+          <span className="action-log__item-label">{formatLogLabel(entry.name)}</span>
+        </div>
+        <div className="action-log__card-header-right">
+          {entry.durationMs !== undefined && (
+            <span className="action-log__duration-badge">{`${entry.durationMs}ms`}</span>
+          )}
+          <span className="action-log__card-chevron" aria-hidden="true">
+            {isExpanded ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+          </span>
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div id={detailsId} className="action-log__card-details">
+          {entry.frameOrigin && (
+            <div className="action-log__card-field">
+              <span className="action-log__card-field-name">Frame origin</span>
+              <span className="action-log__card-field-value">{entry.frameOrigin}</span>
+            </div>
+          )}
+          {entry.arguments && Object.keys(entry.arguments).length > 0 && (
+            <div className="action-log__card-field">
+              <span className="action-log__card-field-name">Parameters</span>
+              <pre className="action-log__card-json">
+                {JSON.stringify(entry.arguments, null, 2)}
+              </pre>
+            </div>
+          )}
+          {entry.rawResult !== undefined && (
+            <div className="action-log__card-field">
+              <span className="action-log__card-field-name">Result</span>
+              <pre className="action-log__card-json">
+                {typeof entry.rawResult === 'string'
+                  ? entry.rawResult
+                  : JSON.stringify(entry.rawResult, null, 2)}
+              </pre>
+            </div>
+          )}
+          {entry.errorMessage && (
+            <div className="action-log__card-field action-log__card-field--error">
+              <span className="action-log__card-field-name">Error</span>
+              <span className="action-log__card-field-value">{entry.errorMessage}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ActionLog({
   status,
   statusText,
@@ -91,18 +182,7 @@ export function ActionLog({
           <div className="action-log__items">
             {displayLogs.length > 0 ? (
               displayLogs.map((entry) => (
-                <div key={entry.id} className="action-log__item">
-                  <div className="action-log__item-icon">
-                    {entry.done ? (
-                      <span className="action-log__item-check">✓</span>
-                    ) : (
-                      <span className="action-log__item-circle" />
-                    )}
-                  </div>
-                  <span className="action-log__item-label">
-                    {formatLogLabel(entry.name)}
-                  </span>
-                </div>
+                <ActionLogCard key={entry.id} entry={entry} />
               ))
             ) : (
               <div className="action-log__item">

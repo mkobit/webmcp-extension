@@ -31,7 +31,8 @@ import { EditSquareIcon } from './components/Icons.js';
 import { useActiveTabId } from './hooks/useActiveTabId.js';
 import { useActiveTabTools } from './hooks/useActiveTabTools.js';
 import { useAgentSession } from './hooks/useAgentSession.js';
-import { flushActiveSession } from './services/tabSessionStore.js';
+import { flushActiveSession, tabSessions } from './services/tabSessionStore.js';
+import { exportSessionTrace } from './services/traceExport.js';
 import { type ContextUsage, isPromptApiSupported, prepareOnDeviceModel } from './services/promptApiBackend.js';
 
 /** Starts the on-device model download; a failure only means it starts later, with the first message. */
@@ -197,6 +198,7 @@ export function App() {
     activityLog,
     pendingPermission,
     pendingCheckpoint,
+    sessionTokenUsage,
     handleSendPrompt,
     handleStop,
     handleReset,
@@ -213,6 +215,16 @@ export function App() {
   });
   // The agent is waiting on the user: to allow a tool, or to keep using tools.
   const waitingOnUser = Boolean(pendingPermission || pendingCheckpoint);
+
+  const handleExportTrace = useCallback(() => {
+    if (activeTabId != null) {
+      const state = tabSessions.getState(activeTabId);
+      exportSessionTrace({
+        ...state,
+        tools: state.tools.length > 0 ? state.tools : tools,
+      });
+    }
+  }, [activeTabId, tools]);
 
   const handleToggleOnDeviceModel = () => {
     // Switching backends mid-response would pull the conversation out from
@@ -341,7 +353,20 @@ export function App() {
               {messages.length > 0 && (
                 <div className="chat-card">
                   <div className="chat-card__header">
-                    {onDeviceModel && contextUsage && <ContextMeter {...contextUsage} />}
+                    <div className="chat-card__header-metrics">
+                      {onDeviceModel && contextUsage && <ContextMeter {...contextUsage} />}
+                      {sessionTokenUsage && (
+                        <div
+                          className="session-tokens"
+                          title={`Session tokens: ${sessionTokenUsage.totalTokens.toLocaleString()} (${sessionTokenUsage.promptTokens.toLocaleString()} prompt / ${sessionTokenUsage.completionTokens.toLocaleString()} completion)`}
+                          aria-label={`Session tokens: ${sessionTokenUsage.totalTokens} tokens`}
+                        >
+                          <span className="session-tokens__count">
+                            {sessionTokenUsage.totalTokens.toLocaleString()} tokens
+                          </span>
+                        </div>
+                      )}
+                    </div>
                     <button
                       type="button"
                       className="chat-card__new-chat-btn"
@@ -376,6 +401,13 @@ export function App() {
                             {msg.text && (
                               <div className="ai-response">
                                 <MarkdownText content={msg.text} />
+                              </div>
+                            )}
+                            {msg.tokenUsage && (
+                              <div className="token-chip" aria-label="Token usage">
+                                <span className="token-chip__text">
+                                  {msg.tokenUsage.promptTokens.toLocaleString()} prompt / {msg.tokenUsage.completionTokens.toLocaleString()} completion tokens
+                                </span>
                               </div>
                             )}
                           </React.Fragment>
@@ -468,6 +500,8 @@ export function App() {
                   actionVariant: busy ? 'stop' : userPrompt.trim() ? 'send' : 'live',
                   onActionClick: busy ? handleStop : handleSendPrompt,
                   onSettingsClick: () => setShowSettings(true),
+                  onExportTrace: handleExportTrace,
+                  canExport: messages.length > 0,
                 }}
                 permissionProps={
                   pendingPermission

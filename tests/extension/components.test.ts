@@ -12,7 +12,7 @@ import { ButtonUI } from '../../extension/sidepanel/components/ButtonUI.js';
 import { IPHPopover } from '../../extension/sidepanel/components/IPHPopover.js';
 import { WebMCPToolsDialogue } from '../../extension/sidepanel/components/WebMCPToolsDialogue.js';
 import { MarkdownText } from '../../extension/sidepanel/components/MarkdownText.js';
-import { ActionLog, formatLogLabel } from '../../extension/sidepanel/components/ActionLog.js';
+import { ActionLog, ActionLogCard, formatLogLabel } from '../../extension/sidepanel/components/ActionLog.js';
 import { AttachedTab } from '../../extension/sidepanel/components/AttachedTab.js';
 import { ActionsChip } from '../../extension/sidepanel/components/ActionsChip.js';
 import { TextInput } from '../../extension/sidepanel/components/TextInput.js';
@@ -20,6 +20,7 @@ import { Toolbar } from '../../extension/sidepanel/components/Toolbar.js';
 import { ChatBubble } from '../../extension/sidepanel/components/ChatBubble.js';
 import { ConsentScreen } from '../../extension/sidepanel/screens/ConsentScreen.js';
 import { Favicon } from '../../extension/sidepanel/components/Favicon.js';
+import { DownloadIcon } from '../../extension/sidepanel/components/Icons.js';
 import { Switch } from '../../extension/sidepanel/components/Switch.js';
 import { SettingsScreen } from '../../extension/sidepanel/screens/SettingsScreen.js';
 import { AllowToolPermissionCard } from '../../extension/sidepanel/components/AllowToolPermissionCard.js';
@@ -389,4 +390,101 @@ test('ActionLog can stay in the page while hidden', () => {
 
   const shown = renderToString(React.createElement(ActionLog, props));
   assert.match(shown, /^<div class="action-log">/);
+});
+
+test('DownloadIcon renders Google Symbol icon download', () => {
+  const html = renderToString(React.createElement(DownloadIcon));
+  assert.ok(html.includes('download'));
+  assert.ok(html.includes('cdds-symbol'));
+});
+
+test('Toolbar renders export button and toggles disabled state via canExport', () => {
+  const enabledHtml = renderToString(
+    React.createElement(Toolbar, {
+      onExportTrace: () => {},
+      canExport: true,
+    })
+  );
+  assert.ok(enabledHtml.includes('toolbar__export-btn'));
+  assert.ok(enabledHtml.includes('aria-label="Export trace"'));
+  assert.ok(!enabledHtml.includes('disabled=""'));
+
+  const disabledHtml = renderToString(
+    React.createElement(Toolbar, {
+      onExportTrace: () => {},
+      canExport: false,
+    })
+  );
+  assert.ok(disabledHtml.includes('toolbar__export-btn'));
+  assert.ok(disabledHtml.includes('disabled=""'));
+
+  const withoutExportHtml = renderToString(React.createElement(Toolbar));
+  assert.ok(!withoutExportHtml.includes('toolbar__export-btn'));
+});
+
+test('ActionLogCard renders collapsed card header with duration badge and status icon', () => {
+  const html = renderToString(
+    React.createElement(ActionLogCard, {
+      entry: {
+        id: 1,
+        name: 'query_inventory',
+        done: true,
+        status: 'success',
+        durationMs: 84,
+      },
+    })
+  );
+
+  assert.ok(html.includes('action-log__card'));
+  assert.ok(html.includes('aria-expanded="false"'));
+  assert.ok(html.includes('action-log__item-check'));
+  assert.ok(html.includes('Query inventory'));
+  assert.ok(html.includes('84ms'));
+  assert.ok(!html.includes('action-log__card-details'));
+});
+
+test('ActionLogCard renders expanded details with frame origin, parameters, and result', () => {
+  const html = renderToString(
+    React.createElement(ActionLogCard, {
+      defaultExpanded: true,
+      entry: {
+        id: 2,
+        name: 'update_cart',
+        done: true,
+        status: 'success',
+        durationMs: 120,
+        frameOrigin: 'https://checkout.example.com',
+        arguments: { itemId: 42, count: 2 },
+        rawResult: { success: true },
+      },
+    })
+  );
+
+  assert.ok(html.includes('aria-expanded="true"'));
+  assert.ok(html.includes('action-log__card-details'));
+  assert.ok(html.includes('Frame origin'));
+  assert.ok(html.includes('https://checkout.example.com'));
+  assert.ok(html.includes('Parameters'));
+  assert.ok(html.includes('itemId') && html.includes('42'));
+  assert.ok(html.includes('Result'));
+  assert.ok(html.includes('success') && html.includes('true'));
+});
+
+test('ActionLogCard renders error indicator and error message on failure', () => {
+  const html = renderToString(
+    React.createElement(ActionLogCard, {
+      defaultExpanded: true,
+      entry: {
+        id: 3,
+        name: 'submit_payment',
+        done: true,
+        status: 'error',
+        errorMessage: 'Card declined',
+      },
+    })
+  );
+
+  assert.ok(html.includes('action-log__item-error'));
+  assert.ok(html.includes('action-log__card-field--error'));
+  assert.ok(html.includes('Card declined'));
 });
