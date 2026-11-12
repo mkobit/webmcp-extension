@@ -4,12 +4,14 @@
  */
 
 import { ButtonUI, type ButtonVariant } from './ButtonUI.js';
-import { SettingsIcon } from './Icons.js';
+import { DownloadIcon, SettingsIcon } from './Icons.js';
 
 export interface ToolbarProps {
   actionVariant?: ButtonVariant;
   onActionClick?: () => void;
   onSettingsClick?: () => void;
+  onExportTrace?: () => void;
+  canExport?: boolean;
 }
 
 /**
@@ -20,6 +22,8 @@ export function Toolbar({
   actionVariant = 'live',
   onActionClick,
   onSettingsClick,
+  onExportTrace,
+  canExport = true,
 }: ToolbarProps) {
   return (
     <div className="toolbar">
@@ -32,6 +36,18 @@ export function Toolbar({
           title="Settings"
         >
           <SettingsIcon size={20} color="var(--color-on-surface-variant)" />
+        </button>
+      )}
+      {onExportTrace && (
+        <button
+          type="button"
+          className="toolbar__export-btn"
+          onClick={onExportTrace}
+          disabled={!canExport}
+          aria-label="Export trace"
+          title="Export trace"
+        >
+          <DownloadIcon size={20} color="var(--color-on-surface-variant)" />
         </button>
       )}
       <ButtonUI

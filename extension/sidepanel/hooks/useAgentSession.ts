@@ -84,6 +84,7 @@ export interface UseAgentSessionReturn {
   pendingPermission: PendingToolPermission | null;
   /** Set while the agent waits for the user to let it keep using tools. */
   pendingCheckpoint: PendingToolCheckpoint | null;
+  sessionTokenUsage?: TokenUsage;
   handleSendPrompt: () => Promise<void>;
   handleStop: () => void;
   handleReset: () => void;
@@ -879,6 +880,7 @@ export function useAgentSession(
     activityLog: session.activityLog,
     pendingPermission: session.pendingPermission,
     pendingCheckpoint: session.pendingCheckpoint,
+    sessionTokenUsage: session.sessionTokenUsage,
     handleSendPrompt,
     handleStop,
     handleReset,
