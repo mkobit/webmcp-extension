@@ -9,7 +9,7 @@ import {
   buildCodexDynamicTools,
   handleCodexToolCall,
 } from '../../extension/sidepanel/services/codexToolBridge.js';
-import type { WebMCPTool } from '../../extension/sidepanel/types/index.js';
+import type { ActivityEntry, WebMCPTool } from '../../extension/sidepanel/types/index.js';
 import { clearSessionToolPermissions } from '../../extension/sidepanel/services/toolPermissions.js';
 
 test('buildCodexDynamicTools converts WebMCP tools with frame prefix encoding and fallback schema', () => {
@@ -196,4 +196,181 @@ test('handleCodexToolCall applies spotlighting when tool has untrustedContentHin
   const text = response.contentItems[0].text;
   assert.notEqual(text, '<html>Unsafe content</html>');
   assert.equal(atob(text), '<html>Unsafe content</html>');
+});
+
+test('handleCodexToolCall records success telemetry with duration, origin, and arguments', async () => {
+  const tools: WebMCPTool[] = [
+    {
+      name: 'calculate',
+      frameId: 0,
+      readOnlyHint: true,
+    },
+  ];
+
+  let telemetryEntry: ActivityEntry | undefined;
+  const response = await handleCodexToolCall(
+    {
+      threadId: 't-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      tool: '_0_calculate',
+      arguments: { expr: '2 + 2' },
+    },
+    {
+      tabId: 10,
+      origin: 'https://calc.example',
+      tools,
+      executeTool: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return { result: 4 };
+      },
+      onToolTelemetry: (entry) => {
+        telemetryEntry = entry;
+      },
+    }
+  );
+
+  assert.equal(response.success, true);
+  assert.ok(telemetryEntry);
+  assert.equal(telemetryEntry.name, 'calculate');
+  assert.equal(telemetryEntry.done, true);
+  assert.equal(telemetryEntry.status, 'success');
+  assert.ok(typeof telemetryEntry.durationMs === 'number');
+  assert.ok(telemetryEntry.durationMs >= 5);
+  assert.equal(telemetryEntry.frameId, 0);
+  assert.equal(telemetryEntry.frameOrigin, 'https://calc.example');
+  assert.deepEqual(telemetryEntry.arguments, { expr: '2 + 2' });
+  assert.deepEqual(telemetryEntry.rawResult, { result: 4 });
+  assert.equal(telemetryEntry.resultSummary, '{"result":4}');
+});
+
+test('handleCodexToolCall redacts sensitive keys in telemetry', async () => {
+  const tools: WebMCPTool[] = [
+    {
+      name: 'login',
+      frameId: 0,
+      readOnlyHint: true,
+    },
+  ];
+
+  let telemetryEntry: ActivityEntry | undefined;
+  await handleCodexToolCall(
+    {
+      threadId: 't-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      tool: '_0_login',
+      arguments: {
+        username: 'alice',
+        password: 'my-password', // betterleaks:allow
+        auth_token: 'tok-123',
+      },
+    },
+    {
+      tabId: 10,
+      origin: 'https://auth.example',
+      tools,
+      executeTool: async (_name, args) => {
+        // Ensure execution received raw args
+        assert.equal(args.password, 'my-password');
+        return {
+          sessionToken: 'session-secret-456',
+          status: 'ok',
+        };
+      },
+      onToolTelemetry: (entry) => {
+        telemetryEntry = entry;
+      },
+    }
+  );
+
+  assert.ok(telemetryEntry);
+  assert.equal(telemetryEntry.arguments?.username, 'alice');
+  assert.equal(telemetryEntry.arguments?.password, '[REDACTED]');
+  assert.equal(telemetryEntry.arguments?.auth_token, '[REDACTED]');
+  const rawResult = telemetryEntry.rawResult as any;
+  assert.equal(rawResult.status, 'ok');
+  assert.equal(rawResult.sessionToken, '[REDACTED]');
+});
+
+test('handleCodexToolCall records error telemetry on execution failure', async () => {
+  const tools: WebMCPTool[] = [
+    {
+      name: 'failTool',
+      frameId: 0,
+      readOnlyHint: true,
+    },
+  ];
+
+  let telemetryEntry: ActivityEntry | undefined;
+  const response = await handleCodexToolCall(
+    {
+      threadId: 't-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      tool: '_0_failTool',
+      arguments: { foo: 'bar' },
+    },
+    {
+      tabId: 10,
+      origin: 'https://error.example',
+      tools,
+      executeTool: async () => {
+        throw new Error('Database connection failed');
+      },
+      onToolTelemetry: (entry) => {
+        telemetryEntry = entry;
+      },
+    }
+  );
+
+  assert.equal(response.success, false);
+  assert.ok(telemetryEntry);
+  assert.equal(telemetryEntry.name, 'failTool');
+  assert.equal(telemetryEntry.done, true);
+  assert.equal(telemetryEntry.status, 'error');
+  assert.match(telemetryEntry.errorMessage ?? '', /Database connection failed/);
+  assert.match(telemetryEntry.resultSummary ?? '', /Database connection failed/);
+});
+
+test('handleCodexToolCall records error telemetry when permission is denied', async () => {
+  clearSessionToolPermissions(10);
+  const tools: WebMCPTool[] = [
+    {
+      name: 'sensitiveAction',
+      frameId: 0,
+      consequentialHint: true,
+    },
+  ];
+
+  let telemetryEntry: ActivityEntry | undefined;
+  const response = await handleCodexToolCall(
+    {
+      threadId: 't-1',
+      turnId: 'turn-1',
+      callId: 'call-1',
+      tool: '_0_sensitiveAction',
+      arguments: { action: 'delete' },
+    },
+    {
+      tabId: 10,
+      origin: 'https://security.example',
+      tools,
+      sensitiveActionAlerts: true,
+      onRequestPermission: async () => 'deny',
+      executeTool: async () => {
+        throw new Error('Should not run');
+      },
+      onToolTelemetry: (entry) => {
+        telemetryEntry = entry;
+      },
+    }
+  );
+
+  assert.equal(response.success, false);
+  assert.ok(telemetryEntry);
+  assert.equal(telemetryEntry.name, 'sensitiveAction');
+  assert.equal(telemetryEntry.done, true);
+  assert.equal(telemetryEntry.status, 'error');
+  assert.match(telemetryEntry.errorMessage ?? '', /denied permission/i);
 });

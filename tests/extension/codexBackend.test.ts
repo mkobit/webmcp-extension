@@ -353,3 +353,53 @@ test('sendCodexChatTurn rejects with connection error when socket closes mid-tur
     restore();
   }
 });
+
+test('sendCodexChatTurn extracts tokenUsage from turn/completed notification', async () => {
+  const restore = setupMockWebSocket();
+  try {
+    const client = new CodexClient();
+    const connectPromise = client.connect(45123);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+    await connectPromise;
+
+    const tabId = 306;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'thread-token-test';
+
+    const turnPromise = sendCodexChatTurn(
+      { message: 'Token usage test' },
+      { tabId, client }
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+    const turnReq = JSON.parse(ws.sent[1]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: turnReq.id, result: { turn: { id: 'turn-u1' } } });
+
+    // Complete turn with token usage
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-token-test',
+        turn: { id: 'turn-u1' },
+        usage: {
+          promptTokens: 250,
+          completionTokens: 80,
+          totalTokens: 330,
+        },
+      },
+    });
+
+    const res = await turnPromise;
+    assert.deepEqual(res.tokenUsage, {
+      promptTokens: 250,
+      completionTokens: 80,
+      totalTokens: 330,
+    });
+  } finally {
+    restore();
+  }
+});
