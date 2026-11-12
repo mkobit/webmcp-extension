@@ -1453,3 +1453,159 @@ test('chrome.storage.local mock supports get, set, remove, and clear', async () 
     browser.restore();
   }
 });
+
+test('saveActiveSession writes debounced state to chrome.storage.local', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 10;
+    const origin = 'https://example.com';
+    tabSessions.update(tabId, {
+      origin,
+      messages: [{ id: 1, role: 'user', text: 'Hello storage' }],
+      activityLog: [{ id: 1, name: 'test_tool', done: true, status: 'success', durationMs: 42 }],
+      sessionTokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+    tabSessions.getInternals(tabId).codexThreadId = 'thread-123';
+
+    tabSessions.saveActiveSession(tabId, origin);
+
+    // Immediately before debounce fires, storage should be empty.
+    const key = `active_session_${origin}_${tabId}`;
+    assert.equal((await chrome.storage.local.get(key))[key], undefined);
+
+    // Wait for 550 ms debounce.
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    const stored = (await chrome.storage.local.get(key))[key] as Record<string, unknown>;
+    assert.ok(stored);
+    assert.equal(stored.version, 1);
+    assert.equal(stored.origin, origin);
+    assert.equal(stored.tabId, tabId);
+    assert.equal(stored.codexThreadId, 'thread-123');
+    assert.deepEqual(stored.tokenUsage, { promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+    assert.equal((stored.messages as unknown[]).length, 1);
+    assert.equal((stored.activityLog as unknown[]).length, 1);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('flushActiveSession writes uncommitted changes immediately', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 11;
+    const origin = 'https://example.com';
+    tabSessions.update(tabId, {
+      origin,
+      messages: [{ id: 1, role: 'user', text: 'Uncommitted message' }],
+    });
+
+    tabSessions.saveActiveSession(tabId, origin);
+    // Flush immediately without waiting 500 ms.
+    await tabSessions.flushActiveSession(tabId);
+
+    const key = `active_session_${origin}_${tabId}`;
+    const stored = (await chrome.storage.local.get(key))[key] as Record<string, unknown>;
+    assert.ok(stored);
+    assert.equal((stored.messages as unknown[]).length, 1);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('restoreActiveSession populates messages, token totals, telemetry, and codexThreadId', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 12;
+    const origin = 'https://example.com';
+    const key = `active_session_${origin}_${tabId}`;
+    await chrome.storage.local.set({
+      [key]: {
+        version: 1,
+        origin,
+        tabId,
+        updatedAt: Date.now() - 5000,
+        messages: [{ id: 101, role: 'user', text: 'Hydrated user' }],
+        activityLog: [{ id: 201, name: 'tool_a', done: true, status: 'success' }],
+        tokenUsage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+        codexThreadId: 'thread-hydrated',
+      },
+    });
+
+    const restored = await tabSessions.restoreActiveSession(tabId, origin);
+    assert.equal(restored, true);
+
+    const state = tabSessions.getState(tabId);
+    assert.equal(state.messages.length, 1);
+    assert.equal(state.messages[0].text, 'Hydrated user');
+    assert.equal(state.activityLog.length, 1);
+    assert.deepEqual(state.sessionTokenUsage, { promptTokens: 20, completionTokens: 10, totalTokens: 30 });
+    assert.equal(tabSessions.getInternals(tabId).codexThreadId, 'thread-hydrated');
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('restoreActiveSession discards entries older than 24 hours and cleans them from storage', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 13;
+    const origin = 'https://example.com';
+    const key = `active_session_${origin}_${tabId}`;
+    // 25 hours old
+    const expiredTimestamp = Date.now() - 25 * 60 * 60 * 1000;
+    await chrome.storage.local.set({
+      [key]: {
+        version: 1,
+        origin,
+        tabId,
+        updatedAt: expiredTimestamp,
+        messages: [{ id: 101, role: 'user', text: 'Expired' }],
+      },
+    });
+
+    const restored = await tabSessions.restoreActiveSession(tabId, origin);
+    assert.equal(restored, false);
+
+    const state = tabSessions.getState(tabId);
+    assert.equal(state.messages.length, 0);
+
+    // Stored key must be deleted
+    assert.equal((await chrome.storage.local.get(key))[key], undefined);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('clearActiveSession removes the stored session key', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 14;
+    const origin = 'https://example.com';
+    const key = `active_session_${origin}_${tabId}`;
+    await chrome.storage.local.set({
+      [key]: {
+        version: 1,
+        origin,
+        tabId,
+        updatedAt: Date.now(),
+        messages: [{ id: 101, role: 'user', text: 'To be cleared' }],
+      },
+    });
+
+    await tabSessions.clearActiveSession(tabId, origin);
+    assert.equal((await chrome.storage.local.get(key))[key], undefined);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});

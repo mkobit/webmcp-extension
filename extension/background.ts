@@ -29,6 +29,23 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.tabs.onUpdated.addListener((tabId) => updateBadge(tabId));
 chrome.webNavigation.onCompleted.addListener(({ tabId }) => updateBadge(tabId));
 
+// Remove persisted session storage when a tab closes.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (!chrome.storage?.local) return;
+  try {
+    const all = await chrome.storage.local.get(null);
+    const suffix = `_${tabId}`;
+    const keysToRemove = Object.keys(all).filter(
+      (key) => key.startsWith('active_session_') && key.endsWith(suffix)
+    );
+    if (keysToRemove.length > 0) {
+      await chrome.storage.local.remove(keysToRemove);
+    }
+  } catch (error) {
+    console.debug('[WebMCP] Failed to clean up storage for closed tab:', error);
+  }
+});
+
 async function updateBadge(tabId: number): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id !== tabId) return;

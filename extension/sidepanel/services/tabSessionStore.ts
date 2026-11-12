@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   type PendingToolCheckpoint,
   type PendingToolPermission,
+  type TokenUsage,
   type WebMCPTool,
 } from '../types/index.js';
 
@@ -21,7 +22,7 @@ import {
  * on screen after switching to a page that never asked for anything. Each tab
  * keeps its own, and the panel renders whichever tab is in front.
  */
-interface TabSessionState {
+export interface TabSessionState {
   /** What is typed in the composer but not sent yet. */
   userPrompt: string;
   messages: ChatMessage[];
@@ -38,6 +39,26 @@ interface TabSessionState {
   origin: string;
   favicon: string;
   statusMsg: string;
+  sessionTokenUsage?: TokenUsage;
+}
+
+export interface PersistedSessionData {
+  version: 1;
+  origin: string;
+  tabId: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+  activityLog: ActivityEntry[];
+  tokenUsage?: TokenUsage;
+  codexThreadId?: string;
+}
+
+export const SESSION_STORAGE_PREFIX = 'active_session_';
+export const SESSION_EXPIRATION_MS = 24 * 60 * 60 * 1000;
+export const SESSION_SAVE_DEBOUNCE_MS = 500;
+
+export function getSessionStorageKey(origin: string, tabId: number): string {
+  return `${SESSION_STORAGE_PREFIX}${origin}_${tabId}`;
 }
 
 /**
@@ -91,6 +112,17 @@ class TabSessionStore {
   private states = new Map<number, TabSessionState>();
   private internals = new Map<number, TabSessionInternals>();
   private listeners = new Set<() => void>();
+  private pendingWrites = new Map<number, { timer: ReturnType<typeof setTimeout>; origin: string }>();
+
+  constructor() {
+    if (typeof chrome !== 'undefined' && chrome?.tabs?.onRemoved?.addListener) {
+      try {
+        chrome.tabs.onRemoved.addListener((tabId) => {
+          void this.clearSessionStorageForTab(tabId);
+        });
+      } catch {}
+    }
+  }
 
   /** Bound so React sees the same function across renders. */
   subscribe = (listener: () => void): (() => void) => {
@@ -125,6 +157,17 @@ class TabSessionStore {
     if (this.states.has(tabId) && isUnchanged(previous, next)) return;
     this.states.set(tabId, next);
     this.emit();
+
+    if (
+      next.origin &&
+      (previous.messages !== next.messages ||
+        previous.activityLog !== next.activityLog ||
+        previous.sessionTokenUsage !== next.sessionTokenUsage)
+    ) {
+      if (next.messages.length > 0 || next.activityLog.length > 0) {
+        this.saveActiveSession(tabId, next.origin);
+      }
+    }
   }
 
   /** The turn state of `tabId`, created on first use. */
@@ -155,11 +198,135 @@ class TabSessionStore {
     return false;
   };
 
+  /** Queues a debounced write of the tab's session to chrome.storage.local. */
+  saveActiveSession = (tabId: number, origin: string): void => {
+    if (!origin) return;
+    const existing = this.pendingWrites.get(tabId);
+    if (existing) {
+      clearTimeout(existing.timer);
+    }
+    const timer = setTimeout(() => {
+      this.pendingWrites.delete(tabId);
+      void this.persistSessionNow(tabId, origin);
+    }, SESSION_SAVE_DEBOUNCE_MS);
+    this.pendingWrites.set(tabId, { timer, origin });
+  };
+
+  /** Flushes any pending debounced session save immediately. */
+  flushActiveSession = async (tabId: number): Promise<void> => {
+    const pending = this.pendingWrites.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(tabId);
+      await this.persistSessionNow(tabId, pending.origin);
+      return;
+    }
+    const state = this.getState(tabId);
+    if (state.origin) {
+      await this.persistSessionNow(tabId, state.origin);
+    }
+  };
+
+  private async persistSessionNow(tabId: number, origin: string): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome?.storage?.local) return;
+    const state = this.getState(tabId);
+    const internals = this.internals.get(tabId);
+    const key = getSessionStorageKey(origin, tabId);
+    const data: PersistedSessionData = {
+      version: 1,
+      origin,
+      tabId,
+      updatedAt: Date.now(),
+      messages: state.messages,
+      activityLog: state.activityLog,
+      tokenUsage: state.sessionTokenUsage,
+      codexThreadId: internals?.codexThreadId,
+    };
+    try {
+      await chrome.storage.local.set({ [key]: data });
+    } catch (error) {
+      console.warn('[WebMCP] Failed to persist active session to chrome.storage.local:', error);
+    }
+  }
+
+  /** Hydrates a session from chrome.storage.local if present and not expired. */
+  restoreActiveSession = async (tabId: number, origin: string): Promise<boolean> => {
+    if (!origin || typeof chrome === 'undefined' || !chrome?.storage?.local) return false;
+    const key = getSessionStorageKey(origin, tabId);
+    try {
+      const result = await chrome.storage.local.get(key);
+      const data = result[key] as PersistedSessionData | undefined;
+      if (!data || data.version !== 1) return false;
+
+      if (Date.now() - data.updatedAt > SESSION_EXPIRATION_MS) {
+        await chrome.storage.local.remove(key);
+        return false;
+      }
+
+      const internals = this.getInternals(tabId);
+      if (data.codexThreadId) {
+        internals.codexThreadId = data.codexThreadId;
+      }
+      this.update(tabId, {
+        messages: data.messages ?? [],
+        activityLog: data.activityLog ?? [],
+        sessionTokenUsage: data.tokenUsage,
+      });
+      return true;
+    } catch (error) {
+      console.warn('[WebMCP] Failed to restore active session from chrome.storage.local:', error);
+      return false;
+    }
+  };
+
+  /** Deletes the stored session from chrome.storage.local. */
+  clearActiveSession = async (tabId: number, origin: string): Promise<void> => {
+    const pending = this.pendingWrites.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(tabId);
+    }
+    if (typeof chrome === 'undefined' || !chrome?.storage?.local) return;
+    const key = getSessionStorageKey(origin, tabId);
+    try {
+      await chrome.storage.local.remove(key);
+    } catch (error) {
+      console.warn('[WebMCP] Failed to clear active session from chrome.storage.local:', error);
+    }
+  };
+
+  /** Removes all session storage keys for a tab. */
+  clearSessionStorageForTab = async (tabId: number): Promise<void> => {
+    const pending = this.pendingWrites.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(tabId);
+    }
+    if (typeof chrome === 'undefined' || !chrome?.storage?.local) return;
+    try {
+      const all = await chrome.storage.local.get(null);
+      const suffix = `_${tabId}`;
+      const keysToRemove = Object.keys(all).filter(
+        (k) => k.startsWith(SESSION_STORAGE_PREFIX) && k.endsWith(suffix)
+      );
+      if (keysToRemove.length > 0) {
+        await chrome.storage.local.remove(keysToRemove);
+      }
+    } catch (error) {
+      console.warn('[WebMCP] Failed to remove storage for tab:', error);
+    }
+  };
+
   /**
    * Resets a tab's conversation state and releases its backend session while
    * keeping the tab's discovered tools and page metadata intact.
    */
   resetChat(tabId: number, options: { onDevice?: boolean; codex?: boolean } = {}): void {
+    const pending = this.pendingWrites.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(tabId);
+    }
     const internals = this.internals.get(tabId);
     if (internals) {
       internals.abortController?.abort();
@@ -181,6 +348,7 @@ class TabSessionStore {
       pendingPermission: null,
       pendingCheckpoint: null,
       busy: false,
+      sessionTokenUsage: undefined,
     });
   }
 
@@ -190,6 +358,15 @@ class TabSessionStore {
    * again does not sit there holding context.
    */
   remove(tabId: number, options: { onDevice?: boolean; codex?: boolean } = {}): void {
+    const pending = this.pendingWrites.get(tabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(tabId);
+    }
+    const state = this.states.get(tabId);
+    if (state?.origin) {
+      void this.clearActiveSession(tabId, state.origin);
+    }
     const internals = this.internals.get(tabId);
     if (internals) {
       internals.abortController?.abort();
@@ -209,3 +386,19 @@ class TabSessionStore {
 }
 
 export const tabSessions = new TabSessionStore();
+
+export function saveActiveSession(tabId: number, origin: string): void {
+  tabSessions.saveActiveSession(tabId, origin);
+}
+
+export function flushActiveSession(tabId: number): Promise<void> {
+  return tabSessions.flushActiveSession(tabId);
+}
+
+export function restoreActiveSession(tabId: number, origin: string): Promise<boolean> {
+  return tabSessions.restoreActiveSession(tabId, origin);
+}
+
+export function clearActiveSession(tabId: number, origin: string): Promise<void> {
+  return tabSessions.clearActiveSession(tabId, origin);
+}
