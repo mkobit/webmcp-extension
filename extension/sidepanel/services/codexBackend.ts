@@ -13,6 +13,7 @@ import { tabSessions } from './tabSessionStore.js';
 import type {
   ChatTurnRequest,
   ChatTurnResponse,
+  TokenUsage,
   WebMCPTool,
 } from '../types/index.js';
 import type {
@@ -34,6 +35,7 @@ export interface CodexChatTurnOptions {
   onRequestPermission?: ToolExecutionOptions['onRequestPermission'];
   executeTool?: ToolExecutionOptions['executeTool'];
   onTabChanged?: (tabId: number) => void;
+  onToolTelemetry?: ToolExecutionOptions['onToolTelemetry'];
 }
 
 interface ActiveTurnContext {
@@ -76,7 +78,17 @@ function ensureClientHandlers(client: CodexClient): void {
       activeTurnContexts.delete(params.threadId);
       const internals = tabSessions.getInternals(ctx.tabId);
       internals.codexTurnId = undefined;
-      ctx.resolve({ chatId: params.threadId, text: ctx.text });
+
+      let tokenUsage: TokenUsage | undefined;
+      const rawUsage = params?.usage ?? params?.turn?.usage;
+      if (rawUsage && typeof rawUsage === 'object') {
+        const promptTokens = Number(rawUsage.promptTokens ?? rawUsage.inputTokens ?? 0);
+        const completionTokens = Number(rawUsage.completionTokens ?? rawUsage.outputTokens ?? 0);
+        const totalTokens = Number(rawUsage.totalTokens ?? promptTokens + completionTokens);
+        tokenUsage = { promptTokens, completionTokens, totalTokens };
+      }
+
+      ctx.resolve({ chatId: params.threadId, text: ctx.text, tokenUsage });
     }
   });
 
@@ -155,6 +167,7 @@ export async function sendCodexChatTurn(
     onRequestPermission: options.onRequestPermission,
     executeTool: options.executeTool,
     onTabChanged: options.onTabChanged,
+    onToolTelemetry: options.onToolTelemetry,
   };
 
   return new Promise<ChatTurnResponse>((resolve, reject) => {

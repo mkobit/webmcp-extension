@@ -616,4 +616,183 @@ test('useAgentSession clears codexThreadId when chat turn encounters an error', 
   }
 });
 
+test('useAgentSession attaches tokenUsage to the AI ChatMessage on Codex turn completion', async () => {
+  const React = await import('react');
+  const { renderToString } = await import('react-dom/server');
+  const { useAgentSession } = await import('../../extension/sidepanel/hooks/useAgentSession.js');
+  const { tabSessions } = await import('../../extension/sidepanel/services/tabSessionStore.js');
+  const { getCodexClient } = await import('../../extension/sidepanel/services/codexBackend.js');
+
+  const originalWs = (globalThis as any).WebSocket;
+  HookMockWebSocket.instances = [];
+  (globalThis as any).WebSocket = HookMockWebSocket;
+  getCodexClient().disconnect();
+
+  try {
+    const tabId = 404;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'th-404';
+
+    let session: any = null;
+    const Probe = () => {
+      session = useAgentSession(tabId, {
+        backendMode: 'codex',
+        codexConfig: { port: 45123, model: 'gpt-6.1-sol', effort: 'medium' },
+      });
+      return null;
+    };
+    renderToString(React.createElement(Probe));
+    session.setUserPrompt('Token prompt');
+
+    const sendPromise = session.handleSendPrompt();
+    await new Promise((r) => setTimeout(r, 10));
+    const ws = HookMockWebSocket.instances[0];
+    assert.ok(ws);
+    ws.simulateOpen();
+
+    await new Promise((r) => setTimeout(r, 10));
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+
+    await new Promise((r) => setTimeout(r, 10));
+    const turnReq = JSON.parse(ws.sent[1]);
+    assert.equal(turnReq.method, 'turn/start');
+    ws.simulateMessage({ jsonrpc: '2.0', id: turnReq.id, result: { turn: { id: 'turn-404' } } });
+
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'item/agentMessage/delta',
+      params: { threadId: 'th-404', turnId: 'turn-404', delta: 'Reply with tokens' },
+    });
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: {
+        threadId: 'th-404',
+        turn: { id: 'turn-404' },
+        usage: {
+          promptTokens: 150,
+          completionTokens: 42,
+          totalTokens: 192,
+        },
+      },
+    });
+
+    await sendPromise;
+
+    const messages = tabSessions.getState(tabId).messages;
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1].text, 'Reply with tokens');
+    assert.deepEqual(messages[1].tokenUsage, {
+      promptTokens: 150,
+      completionTokens: 42,
+      totalTokens: 192,
+    });
+  } finally {
+    (globalThis as any).WebSocket = originalWs;
+  }
+});
+
+test('useAgentSession records tool execution telemetry from Codex dynamic tool calls', async () => {
+  const React = await import('react');
+  const { renderToString } = await import('react-dom/server');
+  const { useAgentSession } = await import('../../extension/sidepanel/hooks/useAgentSession.js');
+  const { tabSessions } = await import('../../extension/sidepanel/services/tabSessionStore.js');
+  const { getCodexClient } = await import('../../extension/sidepanel/services/codexBackend.js');
+
+  const originalWs = (globalThis as any).WebSocket;
+  HookMockWebSocket.instances = [];
+  (globalThis as any).WebSocket = HookMockWebSocket;
+  getCodexClient().disconnect();
+
+  try {
+    const tabId = 405;
+    tabSessions.resetChat(tabId);
+    tabSessions.getInternals(tabId).codexThreadId = 'th-405';
+    tabSessions.update(tabId, {
+      tools: [
+        {
+          name: 'getWeather',
+          frameId: 0,
+          readOnlyHint: true,
+        },
+      ],
+    });
+
+    let session: any = null;
+    const Probe = () => {
+      session = useAgentSession(tabId, {
+        backendMode: 'codex',
+        origin: 'https://weather.example',
+        codexConfig: { port: 45123, model: 'gpt-6.1-sol', effort: 'medium' },
+      });
+      return null;
+    };
+    renderToString(React.createElement(Probe));
+    session.setUserPrompt('Check weather');
+
+    const sendPromise = session.handleSendPrompt();
+    await new Promise((r) => setTimeout(r, 10));
+    const ws = HookMockWebSocket.instances[0];
+    assert.ok(ws);
+    ws.simulateOpen();
+
+    await new Promise((r) => setTimeout(r, 10));
+    const initReq = JSON.parse(ws.sent[0]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: initReq.id, result: {} });
+
+    await new Promise((r) => setTimeout(r, 10));
+    const turnReq = JSON.parse(ws.sent[1]);
+    ws.simulateMessage({ jsonrpc: '2.0', id: turnReq.id, result: { turn: { id: 'turn-405' } } });
+
+    // Server requests dynamic tool call
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      id: 999,
+      method: 'item/tool/call',
+      params: {
+        threadId: 'th-405',
+        turnId: 'turn-405',
+        callId: 'call-999',
+        tool: '_0_getWeather',
+        arguments: { city: 'Tokyo', password: 'doNotLeak' }, // betterleaks:allow
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Stream reply text
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'item/agentMessage/delta',
+      params: { threadId: 'th-405', turnId: 'turn-405', delta: 'Weather in Tokyo is sunny.' },
+    });
+
+    // Complete the turn
+    ws.simulateMessage({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: 'th-405', turn: { id: 'turn-405' } },
+    });
+
+    await sendPromise;
+
+    const messages = tabSessions.getState(tabId).messages;
+    assert.equal(messages.length, 2);
+    const aiMessage = messages[1];
+    assert.ok(aiMessage.activityLogs);
+    assert.equal(aiMessage.activityLogs.length, 1);
+    const log = aiMessage.activityLogs[0];
+    assert.equal(log.name, 'getWeather');
+    assert.equal(log.done, true);
+    assert.ok(typeof log.durationMs === 'number');
+    assert.equal(log.frameId, 0);
+    assert.equal(log.frameOrigin, 'https://weather.example');
+    assert.equal(log.arguments?.city, 'Tokyo');
+    assert.equal(log.arguments?.password, '[REDACTED]');
+  } finally {
+    (globalThis as any).WebSocket = originalWs;
+  }
+});
+
 

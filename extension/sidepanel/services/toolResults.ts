@@ -16,6 +16,100 @@ import { type WebMCPTool } from '../types/index.js';
 /** Tool results longer than this are cut, so a page cannot flood the model's context. */
 export const MAX_TOOL_RESPONSE_CHARS = 8000;
 
+export const MAX_TELEMETRY_PAYLOAD_BYTES = 64 * 1024;
+const SENSITIVE_KEY_PATTERN = /(authorization|token|password|secret)/i;
+
+/**
+ * Redact sensitive keys (authorization, token, password, secret) recursively
+ * from objects and arrays.
+ */
+export function redactSensitiveKeys<T>(data: T): T {
+  if (data === null || data === undefined) return data;
+  if (typeof data !== 'object') return data;
+
+  const seen = new WeakSet<object>();
+
+  function redact(val: unknown): unknown {
+    if (val === null || val === undefined) return val;
+    if (typeof val !== 'object') return val;
+    if (seen.has(val)) return '[Circular]';
+    seen.add(val);
+
+    if (Array.isArray(val)) {
+      return val.map(redact);
+    }
+
+    const result: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(val as Record<string, unknown>)) {
+      if (SENSITIVE_KEY_PATTERN.test(key)) {
+        result[key] = '[REDACTED]';
+      } else {
+        result[key] = redact(v);
+      }
+    }
+    return result;
+  }
+
+  return redact(data) as T;
+}
+
+/**
+ * Enforce a 64 KB payload size cap for telemetry records.
+ */
+export function truncateTelemetryPayload<T>(
+  data: T,
+  maxBytes = MAX_TELEMETRY_PAYLOAD_BYTES
+): T {
+  if (data === null || data === undefined) return data;
+  if (typeof data === 'string') {
+    if (data.length > maxBytes) {
+      return (data.slice(0, maxBytes) + '... [TRUNCATED]') as unknown as T;
+    }
+    return data;
+  }
+  if (typeof data !== 'object') return data;
+
+  try {
+    const json = JSON.stringify(data);
+    if (json.length <= maxBytes) {
+      return data;
+    }
+    if (Array.isArray(data)) {
+      return (json.slice(0, maxBytes) + '... [TRUNCATED]') as unknown as T;
+    }
+    return {
+      _warning: `Payload exceeded ${maxBytes} bytes limit and was truncated`,
+      preview: json.slice(0, maxBytes) + '... [TRUNCATED]',
+    } as unknown as T;
+  } catch {
+    return data;
+  }
+}
+
+/**
+ * Redact sensitive keys and apply a 64 KB size limit for tool telemetry.
+ */
+export function sanitizeTelemetryData<T>(data: T): T {
+  return truncateTelemetryPayload(redactSensitiveKeys(data));
+}
+
+/**
+ * Produce a short text preview of a result payload for summary display.
+ */
+export function summarizeResult(result: unknown): string | undefined {
+  if (result === undefined) return undefined;
+  if (result === null) return 'null';
+  if (typeof result === 'string') {
+    return result.length > 100 ? `${result.slice(0, 100)}...` : result;
+  }
+  try {
+    const s = JSON.stringify(result);
+    return s.length > 100 ? `${s.slice(0, 100)}...` : s;
+  } catch {
+    return String(result);
+  }
+}
+
 export function applyTokenLimit(result: unknown): unknown {
   if (result === undefined || result === null) return result;
   const str = typeof result === 'string' ? result : JSON.stringify(result);

@@ -3,14 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { WebMCPTool } from '../types/index.js';
+import type { ActivityEntry, WebMCPTool } from '../types/index.js';
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec,
 } from '../types/codex.js';
 import { decodeToolName } from './toolEncoder.js';
-import { applySpotlighting, applyTokenLimit } from './toolResults.js';
+import {
+  applySpotlighting,
+  applyTokenLimit,
+  sanitizeTelemetryData,
+  summarizeResult,
+} from './toolResults.js';
 import {
   applyToolPermissionDecision,
   isGrantEligible,
@@ -19,6 +24,10 @@ import {
   type ToolPermissionQuery,
 } from './toolPermissions.js';
 import { executeTabTool } from './extensionBridge.js';
+import { getFrameOrigin } from '../../frameOrigins.js';
+
+let nextTelemetryId = Date.now();
+const generateTelemetryId = (): number => ++nextTelemetryId;
 
 export interface ToolExecutionOptions {
   tabId: number;
@@ -39,6 +48,7 @@ export interface ToolExecutionOptions {
     options?: { onTabChanged?: (tabId: number) => void }
   ) => Promise<unknown>;
   onTabChanged?: (tabId: number) => void;
+  onToolTelemetry?: (entry: ActivityEntry) => void;
 }
 
 export function buildCodexDynamicTools(tools: WebMCPTool[] = []): DynamicToolSpec[] {
@@ -62,6 +72,7 @@ export async function handleCodexToolCall(
   params: DynamicToolCallParams,
   options: ToolExecutionOptions
 ): Promise<DynamicToolCallResponse> {
+  const startTime = performance.now();
   const { name, frameId = 0 } = decodeToolName(params.tool);
   const targetTool = options.tools.find(
     (tool) => tool.name === name && (tool.frameId ?? 0) === frameId
@@ -77,8 +88,26 @@ export async function handleCodexToolCall(
     toolFrameId: frameId,
   };
 
+  const sanitizedArgs = sanitizeTelemetryData(params.arguments);
+
   if (needsToolPermission(permissionQuery)) {
     if (!options.onRequestPermission) {
+      const durationMs = Math.round(performance.now() - startTime);
+      const frameOrigin =
+        (await getFrameOrigin(options.tabId, frameId)) ??
+        (frameId === 0 ? options.origin : undefined);
+      options.onToolTelemetry?.({
+        id: generateTelemetryId(),
+        name,
+        done: true,
+        status: 'error',
+        durationMs,
+        frameId,
+        frameOrigin,
+        arguments: sanitizedArgs,
+        errorMessage: 'User denied permission to execute this tool.',
+        resultSummary: 'User denied permission to execute this tool.',
+      });
       return {
         success: false,
         contentItems: [
@@ -101,6 +130,22 @@ export async function handleCodexToolCall(
       typeof decision === 'boolean' ? (decision ? 'allow' : 'deny') : decision;
 
     if (!applyToolPermissionDecision(normalizedDecision, permissionQuery)) {
+      const durationMs = Math.round(performance.now() - startTime);
+      const frameOrigin =
+        (await getFrameOrigin(options.tabId, frameId)) ??
+        (frameId === 0 ? options.origin : undefined);
+      options.onToolTelemetry?.({
+        id: generateTelemetryId(),
+        name,
+        done: true,
+        status: 'error',
+        durationMs,
+        frameId,
+        frameOrigin,
+        arguments: sanitizedArgs,
+        errorMessage: 'User denied permission to execute this tool.',
+        resultSummary: 'User denied permission to execute this tool.',
+      });
       return {
         success: false,
         contentItems: [
@@ -124,6 +169,26 @@ export async function handleCodexToolCall(
       { onTabChanged: options.onTabChanged }
     );
 
+    const durationMs = Math.round(performance.now() - startTime);
+    const frameOrigin =
+      (await getFrameOrigin(options.tabId, frameId)) ??
+      (frameId === 0 ? options.origin : undefined);
+    const sanitizedRawResult = sanitizeTelemetryData(rawResult);
+    const resultSummary = summarizeResult(sanitizedRawResult);
+
+    options.onToolTelemetry?.({
+      id: generateTelemetryId(),
+      name,
+      done: true,
+      status: 'success',
+      durationMs,
+      frameId,
+      frameOrigin,
+      arguments: sanitizedArgs,
+      rawResult: sanitizedRawResult,
+      resultSummary,
+    });
+
     const limited = applyTokenLimit(rawResult);
     const spotlighted = applySpotlighting(limited, targetTool);
     const text =
@@ -136,12 +201,29 @@ export async function handleCodexToolCall(
       contentItems: [{ type: 'inputText', text }],
     };
   } catch (err: any) {
+    const durationMs = Math.round(performance.now() - startTime);
+    const frameOrigin =
+      (await getFrameOrigin(options.tabId, frameId)) ??
+      (frameId === 0 ? options.origin : undefined);
+    const errorMessage = `Tool execution failed: ${err?.message ?? String(err)}`;
+    options.onToolTelemetry?.({
+      id: generateTelemetryId(),
+      name,
+      done: true,
+      status: 'error',
+      durationMs,
+      frameId,
+      frameOrigin,
+      arguments: sanitizedArgs,
+      errorMessage,
+      resultSummary: errorMessage,
+    });
     return {
       success: false,
       contentItems: [
         {
           type: 'inputText',
-          text: `Tool execution failed: ${err?.message ?? String(err)}`,
+          text: errorMessage,
         },
       ],
     };

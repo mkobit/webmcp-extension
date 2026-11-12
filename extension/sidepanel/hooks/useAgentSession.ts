@@ -26,7 +26,13 @@ import {
   originOfUrl,
   type ToolPermissionDecision,
 } from '../services/toolPermissions.js';
-import { applySpotlighting, applyTokenLimit, waitForToolsToSettle } from '../services/toolResults.js';
+import {
+  applySpotlighting,
+  applyTokenLimit,
+  sanitizeTelemetryData,
+  summarizeResult,
+  waitForToolsToSettle,
+} from '../services/toolResults.js';
 import { DEFAULT_TOOL_ROUND_LIMITS, ToolRoundLimitError, type ToolRoundLimits } from '../services/toolRoundLimits.js';
 import {
   type ActivityEntry,
@@ -35,9 +41,11 @@ import {
   type ChatTurnResponse,
   type PendingToolCheckpoint,
   type PendingToolPermission,
+  type TokenUsage,
   UserFacingError,
   type WebMCPTool,
 } from '../types/index.js';
+import { getFrameOrigin } from '../../frameOrigins.js';
 
 export interface UseAgentSessionOptions {
   sensitiveActionAlerts?: boolean;
@@ -89,11 +97,29 @@ const generateId = (): number => ++nextId;
  * Each transfer appends a message so activity stays after any earlier text.
  * Logs are drained so stopping or finishing again cannot duplicate them.
  */
-function persistTurnOutput(tabId: number, text: string, onDevice: boolean): void {
+function persistTurnOutput(
+  tabId: number,
+  text: string,
+  onDevice: boolean,
+  tokenUsage?: TokenUsage
+): void {
   const internals = tabSessions.getInternals(tabId);
   const logs = internals.turnLogs;
   const reply = text.trim();
-  if (!reply && logs.length === 0) return;
+  if (!reply && logs.length === 0) {
+    if (tokenUsage) {
+      tabSessions.update(tabId, (previous) => {
+        const lastIndex = previous.messages.length - 1;
+        if (lastIndex >= 0 && previous.messages[lastIndex].role === 'ai') {
+          const updated = [...previous.messages];
+          updated[lastIndex] = { ...updated[lastIndex], tokenUsage };
+          return { messages: updated };
+        }
+        return previous;
+      });
+    }
+    return;
+  }
 
   internals.turnLogs = [];
   const message: ChatMessage = {
@@ -102,6 +128,7 @@ function persistTurnOutput(tabId: number, text: string, onDevice: boolean): void
     text: reply,
     activityLogs: logs,
     onDevice,
+    tokenUsage,
   };
   tabSessions.update(tabId, (previous) => ({ messages: [...previous.messages, message] }));
 }
@@ -386,22 +413,29 @@ export function useAgentSession(
     };
 
     // Activity logger helpers, scoped to this turn's tab.
-    const logActivity = (name: string): ActivityEntry => {
+    const logActivity = (name: string, initial?: Partial<ActivityEntry>): ActivityEntry => {
       const entry: ActivityEntry = {
         id: generateId(),
         name,
         done: false,
+        status: 'running',
+        ...initial,
       };
       internals.turnLogs = [entry, ...internals.turnLogs];
       tabSessions.update(tabId, (previous) => ({ activityLog: [entry, ...previous.activityLog] }));
       return entry;
     };
 
-    const completeActivity = (entry: ActivityEntry) => {
-      const update = (item: ActivityEntry) => (item.id === entry.id ? { ...item, done: true } : item);
-
-      internals.turnLogs = internals.turnLogs.map(update);
-      tabSessions.update(tabId, (previous) => ({ activityLog: previous.activityLog.map(update) }));
+    const recordToolTelemetry = (entry: ActivityEntry) => {
+      const existing = internals.turnLogs.some((item) => item.id === entry.id);
+      if (existing) {
+        const update = (item: ActivityEntry) => (item.id === entry.id ? entry : item);
+        internals.turnLogs = internals.turnLogs.map(update);
+        tabSessions.update(tabId, (previous) => ({ activityLog: previous.activityLog.map(update) }));
+      } else {
+        internals.turnLogs = [entry, ...internals.turnLogs];
+        tabSessions.update(tabId, (previous) => ({ activityLog: [entry, ...previous.activityLog] }));
+      }
     };
 
     const addMessage = (message: ChatMessage) =>
@@ -432,6 +466,7 @@ export function useAgentSession(
     const runToolCall = async (
       call: NonNullable<ChatTurnResponse['functionCalls']>[number]
     ): Promise<ToolResponse | null> => {
+      const startTime = performance.now();
       const { name, frameId } = decodeToolName(call.name);
       // Find the tool declaration among this tab's tools without crossing frame boundaries
       const targetTool =
@@ -444,10 +479,16 @@ export function useAgentSession(
         return toolResponse(call, { error: `Tool "${name}" is not available on this page.` });
       }
 
-      const entry = logActivity(name);
       const origin = currentOrigin();
       // Explicit frameId from the tool call takes precedence over fallback tool metadata.
       const toolFrameId = frameId ?? targetTool.frameId ?? 0;
+      const sanitizedArgs = sanitizeTelemetryData(call.args);
+      const entry = logActivity(name, {
+        status: 'running',
+        frameId: toolFrameId,
+        arguments: sanitizedArgs,
+      });
+
       const permissionQuery = {
         sensitiveActionAlerts: sensitiveActionAlertsRef.current,
         origin,
@@ -470,11 +511,35 @@ export function useAgentSession(
 
         // Verify that the tab has not navigated to a different origin while awaiting permission.
         if (currentOrigin() !== origin) {
-          completeActivity(entry);
+          const durationMs = Math.round(performance.now() - startTime);
+          const frameOrigin =
+            (await getFrameOrigin(turnTabId, toolFrameId)) ??
+            (toolFrameId === 0 ? origin : undefined);
+          recordToolTelemetry({
+            ...entry,
+            done: true,
+            status: 'error',
+            durationMs,
+            frameOrigin,
+            errorMessage: 'Page origin changed before tool execution was approved.',
+            resultSummary: 'Page origin changed before tool execution was approved.',
+          });
           return toolResponse(call, { error: 'Page origin changed before tool execution was approved.' });
         }
         if (!applyToolPermissionDecision(decision, permissionQuery)) {
-          completeActivity(entry);
+          const durationMs = Math.round(performance.now() - startTime);
+          const frameOrigin =
+            (await getFrameOrigin(turnTabId, toolFrameId)) ??
+            (toolFrameId === 0 ? origin : undefined);
+          recordToolTelemetry({
+            ...entry,
+            done: true,
+            status: 'error',
+            durationMs,
+            frameOrigin,
+            errorMessage: 'User denied permission to execute this tool.',
+            resultSummary: 'User denied permission to execute this tool.',
+          });
           return toolResponse(call, { error: 'User denied permission to execute this tool.' });
         }
       }
@@ -502,6 +567,23 @@ export function useAgentSession(
           }
         }
 
+        const durationMs = Math.round(performance.now() - startTime);
+        const frameOrigin =
+          (await getFrameOrigin(turnTabId, toolFrameId)) ??
+          (toolFrameId === 0 ? origin : undefined);
+        const sanitizedRawResult = sanitizeTelemetryData(rawRes);
+        const resultSummary = summarizeResult(sanitizedRawResult);
+
+        recordToolTelemetry({
+          ...entry,
+          done: true,
+          status: 'success',
+          durationMs,
+          frameOrigin,
+          rawResult: sanitizedRawResult,
+          resultSummary,
+        });
+
         const res = applySpotlighting(
           applyTokenLimit(rawRes),
           targetTool,
@@ -510,12 +592,24 @@ export function useAgentSession(
 
         // Security Note: This is where you might utilize a prompt injection classifier to
         // detect any prompt injection in the tool output before returning it to the model.
-        completeActivity(entry);
         return toolResponse(call, { result: res });
       } catch (err: unknown) {
         if (signal.aborted) return null;
-        completeActivity(entry);
-        return toolResponse(call, { error: (err as Error)?.message || String(err) });
+        const durationMs = Math.round(performance.now() - startTime);
+        const frameOrigin =
+          (await getFrameOrigin(turnTabId, toolFrameId)) ??
+          (toolFrameId === 0 ? origin : undefined);
+        const errorMessage = (err as Error)?.message || String(err);
+        recordToolTelemetry({
+          ...entry,
+          done: true,
+          status: 'error',
+          durationMs,
+          frameOrigin,
+          errorMessage,
+          resultSummary: errorMessage,
+        });
+        return toolResponse(call, { error: errorMessage });
       }
     };
 
@@ -542,6 +636,9 @@ export function useAgentSession(
             },
             onTabChanged: (movedTabId) => {
               turnTabId = movedTabId;
+            },
+            onToolTelemetry: (entry) => {
+              recordToolTelemetry(entry);
             },
           }
         : undefined;
@@ -585,7 +682,7 @@ export function useAgentSession(
         !signal.aborted
       ) {
         if (currentResult.text?.trim()) {
-          persistTurnOutput(tabId, currentResult.text, onDeviceModelRef.current);
+          persistTurnOutput(tabId, currentResult.text, onDeviceModelRef.current, currentResult.tokenUsage);
           messageRendered = true;
         }
 
@@ -683,7 +780,7 @@ export function useAgentSession(
 
       const stopped = stoppedByUser || limitReached !== null;
       const reply = stopped ? '' : currentResult.text ?? '';
-      persistTurnOutput(tabId, reply, onDeviceModelRef.current);
+      persistTurnOutput(tabId, reply, onDeviceModelRef.current, stopped ? undefined : currentResult.tokenUsage);
       if (!messageRendered && !reply.trim() && !stopped) {
         addMessage({
           id: generateId(),
