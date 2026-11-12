@@ -113,11 +113,18 @@ class TabSessionStore {
   private internals = new Map<number, TabSessionInternals>();
   private listeners = new Set<() => void>();
   private pendingWrites = new Map<number, { timer: ReturnType<typeof setTimeout>; origin: string }>();
+  private attachedChrome: typeof chrome | null = null;
 
   constructor() {
-    if (typeof chrome !== 'undefined' && chrome?.tabs?.onRemoved?.addListener) {
+    this.ensureChromeListeners();
+  }
+
+  private ensureChromeListeners(): void {
+    const chromeApi = typeof chrome !== 'undefined' ? chrome : undefined;
+    if (chromeApi?.tabs?.onRemoved?.addListener && this.attachedChrome !== chromeApi) {
+      this.attachedChrome = chromeApi;
       try {
-        chrome.tabs.onRemoved.addListener((tabId) => {
+        chromeApi.tabs.onRemoved.addListener((tabId) => {
           void this.clearSessionStorageForTab(tabId);
         });
       } catch {}
@@ -126,6 +133,7 @@ class TabSessionStore {
 
   /** Bound so React sees the same function across renders. */
   subscribe = (listener: () => void): (() => void) => {
+    this.ensureChromeListeners();
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -134,6 +142,7 @@ class TabSessionStore {
 
   /** The state to render for `tabId`, or the empty one for an unknown tab. */
   getState = (tabId: number | null | undefined): TabSessionState => {
+    this.ensureChromeListeners();
     if (tabId == null) return EMPTY_TAB_SESSION;
     return this.states.get(tabId) ?? EMPTY_TAB_SESSION;
   };
@@ -386,6 +395,17 @@ class TabSessionStore {
 }
 
 export const tabSessions = new TabSessionStore();
+
+export function initTabSessionListeners(): void {
+  const chromeApi = typeof chrome !== 'undefined' ? chrome : undefined;
+  if (chromeApi?.tabs?.onRemoved?.addListener) {
+    try {
+      chromeApi.tabs.onRemoved.addListener((tabId) => {
+        void tabSessions.clearSessionStorageForTab(tabId);
+      });
+    } catch {}
+  }
+}
 
 export function saveActiveSession(tabId: number, origin: string): void {
   tabSessions.saveActiveSession(tabId, origin);

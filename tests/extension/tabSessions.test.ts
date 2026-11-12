@@ -15,7 +15,7 @@ import { useActiveTabTools } from '../../extension/sidepanel/hooks/useActiveTabT
 import { useActiveTabId } from '../../extension/sidepanel/hooks/useActiveTabId.js';
 import { requestTabTools, executeTabTool, getTabInfo } from '../../extension/sidepanel/services/extensionBridge.js';
 import { resetOnDeviceChat } from '../../extension/sidepanel/services/promptApiBackend.js';
-import { tabSessions } from '../../extension/sidepanel/services/tabSessionStore.js';
+import { tabSessions, initTabSessionListeners } from '../../extension/sidepanel/services/tabSessionStore.js';
 import { clearSessionToolPermissions } from '../../extension/sidepanel/services/toolPermissions.js';
 import { DEFAULT_TOOL_ROUND_LIMITS, ToolRoundLimitError } from '../../extension/sidepanel/services/toolRoundLimits.js';
 import { type ChatTurnRequest, type WebMCPTool } from '../../extension/sidepanel/types/index.js';
@@ -129,6 +129,8 @@ function installTestChrome(): TestChrome {
       },
     } as unknown as typeof chrome.storage,
   } as typeof chrome;
+
+  initTabSessionListeners();
 
   return state;
 }
@@ -1603,6 +1605,66 @@ test('clearActiveSession removes the stored session key', async () => {
     });
 
     await tabSessions.clearActiveSession(tabId, origin);
+    assert.equal((await chrome.storage.local.get(key))[key], undefined);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('useAgentSession handleReset purges saved storage for active origin', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 15;
+    const origin = 'https://example.com';
+    const key = `active_session_${origin}_${tabId}`;
+
+    await chrome.storage.local.set({
+      [key]: {
+        version: 1,
+        origin,
+        tabId,
+        updatedAt: Date.now(),
+        messages: [{ id: 101, role: 'user', text: 'To reset' }],
+      },
+    });
+
+    const session = readSession(tabId, { origin });
+    session.handleReset();
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Verify storage key was removed
+    assert.equal((await chrome.storage.local.get(key))[key], undefined);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('tab removed cleans up persisted storage for that tab', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 16;
+    const origin = 'https://example.com';
+    const key = `active_session_${origin}_${tabId}`;
+
+    await chrome.storage.local.set({
+      [key]: {
+        version: 1,
+        origin,
+        tabId,
+        updatedAt: Date.now(),
+        messages: [{ id: 1, role: 'user', text: 'Tab 16 message' }],
+      },
+    });
+
+    browser.triggerTabRemoved(tabId);
+    // Allow microtask resolution
+    await new Promise((r) => setTimeout(r, 20));
+
     assert.equal((await chrome.storage.local.get(key))[key], undefined);
   } finally {
     resetTabSessions();

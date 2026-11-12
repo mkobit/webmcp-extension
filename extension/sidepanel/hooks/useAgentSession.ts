@@ -92,6 +92,16 @@ export interface UseAgentSessionReturn {
 let nextId = Date.now();
 const generateId = (): number => ++nextId;
 
+function aggregateTokenUsage(current?: TokenUsage, turn?: TokenUsage): TokenUsage | undefined {
+  if (!turn) return current;
+  if (!current) return { ...turn };
+  return {
+    promptTokens: current.promptTokens + turn.promptTokens,
+    completionTokens: current.completionTokens + turn.completionTokens,
+    totalTokens: current.totalTokens + turn.totalTokens,
+  };
+}
+
 /**
  * Transfers pending activity to the conversation, even without model text.
  * Each transfer appends a message so activity stays after any earlier text.
@@ -110,12 +120,14 @@ function persistTurnOutput(
     if (tokenUsage) {
       tabSessions.update(tabId, (previous) => {
         const lastIndex = previous.messages.length - 1;
+        const updated = [...previous.messages];
         if (lastIndex >= 0 && previous.messages[lastIndex].role === 'ai') {
-          const updated = [...previous.messages];
           updated[lastIndex] = { ...updated[lastIndex], tokenUsage };
-          return { messages: updated };
         }
-        return previous;
+        return {
+          messages: updated,
+          sessionTokenUsage: aggregateTokenUsage(previous.sessionTokenUsage, tokenUsage),
+        };
       });
     }
     return;
@@ -130,7 +142,10 @@ function persistTurnOutput(
     onDevice,
     tokenUsage,
   };
-  tabSessions.update(tabId, (previous) => ({ messages: [...previous.messages, message] }));
+  tabSessions.update(tabId, (previous) => ({
+    messages: [...previous.messages, message],
+    sessionTokenUsage: aggregateTokenUsage(previous.sessionTokenUsage, tokenUsage),
+  }));
 }
 
 /**
@@ -305,17 +320,40 @@ export function useAgentSession(
     toolRoundLimitsRef.current = options?.toolRoundLimits ?? DEFAULT_TOOL_ROUND_LIMITS;
   }, [options?.toolRoundLimits]);
 
-  // Cleanup in-flight requests on unmount: the panel is closing, and nothing
-  // is left to show a reply to.
+  // Hydrate active tab session from storage if untracked in memory.
   useEffect(() => {
+    const origin = options?.origin;
+    if (activeTabId != null && origin) {
+      if (!tabSessions.hasConversation(activeTabId)) {
+        void tabSessions.restoreActiveSession(activeTabId, origin);
+      }
+    }
+  }, [activeTabId, options?.origin]);
+
+  // Cleanup in-flight requests on unmount: the panel is closing, and nothing
+  // is left to show a reply to. Flush active tab session to storage.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (activeTabId != null) {
+        void tabSessions.flushActiveSession(activeTabId);
+      }
+    };
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('beforeunload', handleBeforeUnload);
+    }
+
     return () => {
+      if (typeof window !== 'undefined' && window.removeEventListener) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      }
       for (const tabId of tabSessions.tabIds()) {
+        void tabSessions.flushActiveSession(tabId);
         tabSessions.getInternals(tabId).abortController?.abort();
         tabSessions.update(tabId, { pendingPermission: null, pendingCheckpoint: null, busy: false });
       }
       clearSessionToolPermissions();
     };
-  }, []);
+  }, [activeTabId]);
 
   const setUserPrompt = useCallback<Dispatch<SetStateAction<string>>>(
     (value) => {
@@ -352,6 +390,10 @@ export function useAgentSession(
     // A new chat asks again: permission was given for the conversation the
     // user was having, not for every one that follows it.
     if (activeTabId == null) return;
+    const origin = originRef.current || tabSessions.getState(activeTabId).origin;
+    if (origin) {
+      void tabSessions.clearActiveSession(activeTabId, origin);
+    }
     tabSessions.resetChat(activeTabId, {
       onDevice: onDeviceModelRef.current,
       codex: backendModeRef.current === 'codex',

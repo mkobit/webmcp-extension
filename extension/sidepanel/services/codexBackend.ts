@@ -132,6 +132,18 @@ export async function interruptCodexTurn(
   internals.codexTurnId = undefined;
 }
 
+function isThreadNotFoundError(error: unknown): boolean {
+  if (!error) return false;
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    msg.includes('thread not found') ||
+    msg.includes('thread does not exist') ||
+    msg.includes('unknown thread') ||
+    msg.includes('invalid thread') ||
+    msg.includes('thread_not_found')
+  );
+}
+
 export async function sendCodexChatTurn(
   request: ChatTurnRequest,
   options: CodexChatTurnOptions
@@ -212,7 +224,45 @@ export async function sendCodexChatTurn(
           internals.codexTurnId = turnRes.turn.id;
         }
       })
-      .catch((err) => {
+      .catch(async (err: unknown) => {
+        if (isThreadNotFoundError(err)) {
+          console.warn('[WebMCP] Stale Codex thread detected, recovering with fresh thread:', err);
+          internals.codexThreadId = undefined;
+          activeTurnContexts.delete(threadId!);
+          try {
+            const dynamicTools = buildCodexDynamicTools(options.tools ?? []);
+            const threadRes = await client.sendRequest<CodexThreadStartResponse>('thread/start', {
+              model: options.model,
+              dynamicTools,
+            });
+            const newThreadId = threadRes.thread.id;
+            internals.codexThreadId = newThreadId;
+            internals.chatId = newThreadId;
+            activeTurnContexts.set(newThreadId, ctx);
+
+            const turnRes = await client.sendRequest<CodexTurnStartResponse>('turn/start', {
+              threadId: newThreadId,
+              model: options.model,
+              effort: options.effort,
+              input: [
+                {
+                  type: 'text',
+                  text: request.message ?? '',
+                },
+              ],
+            });
+            if (turnRes?.turn?.id) {
+              internals.codexTurnId = turnRes.turn.id;
+            }
+            return;
+          } catch (retryErr: unknown) {
+            const finalThreadId = internals.codexThreadId ?? threadId!;
+            activeTurnContexts.delete(finalThreadId);
+            options.signal?.removeEventListener('abort', onAbort);
+            reject(retryErr);
+            return;
+          }
+        }
         activeTurnContexts.delete(threadId!);
         options.signal?.removeEventListener('abort', onAbort);
         reject(err);
