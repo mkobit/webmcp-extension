@@ -6,6 +6,11 @@
 import { endChat } from './chatBridge.js';
 import { clearSessionToolPermissions } from './toolPermissions.js';
 import {
+  deriveSessionTitle,
+  getStoredSession,
+  saveStoredSession,
+} from './sessionHistoryStore.js';
+import {
   type ActivityEntry,
   type ChatMessage,
   type PendingToolCheckpoint,
@@ -40,6 +45,8 @@ export interface TabSessionState {
   favicon: string;
   statusMsg: string;
   sessionTokenUsage?: TokenUsage;
+  currentSessionId?: string;
+  sessionTitle?: string;
 }
 
 export interface PersistedSessionData {
@@ -51,6 +58,8 @@ export interface PersistedSessionData {
   activityLog: ActivityEntry[];
   tokenUsage?: TokenUsage;
   codexThreadId?: string;
+  sessionId?: string;
+  sessionTitle?: string;
 }
 
 export const SESSION_STORAGE_PREFIX = 'active_session_';
@@ -79,6 +88,8 @@ const EMPTY_TAB_SESSION: TabSessionState = Object.freeze({
   origin: '',
   favicon: '',
   statusMsg: '',
+  currentSessionId: undefined,
+  sessionTitle: undefined,
 });
 
 /**
@@ -94,6 +105,9 @@ export interface TabSessionInternals {
   abortController: AbortController | null;
   /** The activity of the turn in flight, for the message it ends up on. */
   turnLogs: ActivityEntry[];
+  currentSessionId?: string;
+  sessionTitle?: string;
+  createdAt?: number;
 }
 
 type TabSessionPatch =
@@ -241,6 +255,12 @@ class TabSessionStore {
     const state = this.getState(tabId);
     const internals = this.internals.get(tabId);
     const key = getSessionStorageKey(origin, tabId);
+    const sessionId = state.currentSessionId || internals?.currentSessionId;
+    const sessionTitle =
+      state.sessionTitle ||
+      internals?.sessionTitle ||
+      (state.messages.length > 0 ? deriveSessionTitle(state.messages[0].text) : undefined);
+
     const data: PersistedSessionData = {
       version: 1,
       origin,
@@ -250,9 +270,26 @@ class TabSessionStore {
       activityLog: state.activityLog,
       tokenUsage: state.sessionTokenUsage,
       codexThreadId: internals?.codexThreadId,
+      sessionId,
+      sessionTitle,
     };
     try {
       await chrome.storage.local.set({ [key]: data });
+      if (sessionId && state.domain && (state.messages.length > 0 || state.activityLog.length > 0)) {
+        await saveStoredSession({
+          id: sessionId,
+          domain: state.domain,
+          origin,
+          title: sessionTitle || 'New session',
+          createdAt: internals?.createdAt ?? data.updatedAt,
+          updatedAt: data.updatedAt,
+          messageCount: state.messages.length,
+          messages: state.messages,
+          activityLog: state.activityLog,
+          tokenUsage: state.sessionTokenUsage,
+          codexThreadId: internals?.codexThreadId,
+        });
+      }
     } catch (error) {
       console.warn('[WebMCP] Failed to persist active session to chrome.storage.local:', error);
     }
@@ -276,16 +313,69 @@ class TabSessionStore {
       if (data.codexThreadId) {
         internals.codexThreadId = data.codexThreadId;
       }
+      if (data.sessionId) {
+        internals.currentSessionId = data.sessionId;
+      }
+      if (data.sessionTitle) {
+        internals.sessionTitle = data.sessionTitle;
+      }
       this.update(tabId, {
         messages: data.messages ?? [],
         activityLog: data.activityLog ?? [],
         sessionTokenUsage: data.tokenUsage,
+        currentSessionId: data.sessionId,
+        sessionTitle: data.sessionTitle,
       });
       return true;
     } catch (error) {
       console.warn('[WebMCP] Failed to restore active session from chrome.storage.local:', error);
       return false;
     }
+  };
+
+  /**
+   * Resumes an existing stored session by loading its messages, logs, tokens, and thread.
+   */
+  resumeSession = async (tabId: number, sessionId: string): Promise<boolean> => {
+    const session = await getStoredSession(sessionId);
+    if (!session) return false;
+    const internals = this.getInternals(tabId);
+    internals.currentSessionId = session.id;
+    internals.sessionTitle = session.title;
+    internals.createdAt = session.createdAt;
+    if (session.codexThreadId) {
+      internals.codexThreadId = session.codexThreadId;
+    }
+    this.update(tabId, {
+      currentSessionId: session.id,
+      sessionTitle: session.title,
+      messages: session.messages ?? [],
+      activityLog: session.activityLog ?? [],
+      sessionTokenUsage: session.tokenUsage,
+    });
+    return true;
+  };
+
+  /**
+   * Assigns a unique session identifier and derived title to a tab's session if not already set.
+   */
+  assignSessionId = (tabId: number, prompt: string): string => {
+    const state = this.getState(tabId);
+    if (state.currentSessionId) return state.currentSessionId;
+    const sessionId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `session_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const sessionTitle = deriveSessionTitle(prompt);
+    const internals = this.getInternals(tabId);
+    internals.currentSessionId = sessionId;
+    internals.sessionTitle = sessionTitle;
+    internals.createdAt = Date.now();
+    this.update(tabId, {
+      currentSessionId: sessionId,
+      sessionTitle,
+    });
+    return sessionId;
   };
 
   /** Deletes the stored session from chrome.storage.local. */
@@ -347,6 +437,8 @@ class TabSessionStore {
       internals.codexThreadId = undefined;
       internals.codexTurnId = undefined;
       internals.turnLogs = [];
+      internals.currentSessionId = undefined;
+      internals.sessionTitle = undefined;
     }
     clearSessionToolPermissions(tabId);
     this.update(tabId, {
@@ -358,6 +450,8 @@ class TabSessionStore {
       pendingCheckpoint: null,
       busy: false,
       sessionTokenUsage: undefined,
+      currentSessionId: undefined,
+      sessionTitle: undefined,
     });
   }
 
@@ -466,4 +560,12 @@ export function clearActiveSession(tabId: number, origin: string): Promise<void>
 
 export function migrateTab(fromTabId: number, toTabId: number): Promise<void> {
   return tabSessions.migrateTab(fromTabId, toTabId);
+}
+
+export function resumeSession(tabId: number, sessionId: string): Promise<boolean> {
+  return tabSessions.resumeSession(tabId, sessionId);
+}
+
+export function assignSessionId(tabId: number, prompt: string): string {
+  return tabSessions.assignSessionId(tabId, prompt);
 }
