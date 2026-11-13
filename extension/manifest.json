@@ -6,6 +6,7 @@
   "minimum_chrome_version": "155.0.8052.0",
   "permissions": [
     "sidePanel",
+    "tabs",
     "scripting",
     "webNavigation",
     "favicon",
