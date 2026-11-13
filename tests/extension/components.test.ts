@@ -422,6 +422,26 @@ test('Toolbar renders export button and toggles disabled state via canExport', (
   assert.ok(!withoutExportHtml.includes('toolbar__export-btn'));
 });
 
+test('Toolbar renders history button when onToggleHistory is provided', () => {
+  const html = renderToString(
+    React.createElement(Toolbar, {
+      onToggleHistory: () => {},
+      showingHistory: false,
+    })
+  );
+  assert.ok(html.includes('toolbar__history-btn'));
+  assert.ok(html.includes('aria-label="Show past sessions"'));
+
+  const activeHtml = renderToString(
+    React.createElement(Toolbar, {
+      onToggleHistory: () => {},
+      showingHistory: true,
+    })
+  );
+  assert.ok(activeHtml.includes('toolbar__history-btn--active'));
+  assert.ok(activeHtml.includes('aria-label="Show active chat"'));
+});
+
 test('ActionLogCard renders collapsed card header with duration badge and status icon', () => {
   const html = renderToString(
     React.createElement(ActionLogCard, {
