@@ -1,61 +1,19 @@
-# Feature request: Agent Client Protocol (ACP) backend and in-process MCP server for companion server
+# Support Agent Client Protocol (ACP) runtimes in companion server
 
 ### What are you trying to do?
 
-The WebMCP extension lets developers test WebMCP tools that web pages expose on `document.modelContext`. Currently, the extension routes chat turns either to the browser built-in Prompt API or to cloud model providers through the companion server.
-
-This design introduces two limitations:
-1. Developers must configure raw model API keys in environment files instead of using their existing local agent environments.
-2. The extension cannot interface with local agent runtimes that communicate through the Agent Client Protocol (ACP), such as Google Antigravity (`agy acp`) or OpenAI Codex (`codex-acp`).
-
-Developers also cannot use ACP `configOptions` to discover available models and reasoning levels without managing raw API keys.
+The WebMCP extension lets developers test WebMCP tools that web pages expose on `document.modelContext`. Currently, the extension routes chat turns either to the browser built-in Prompt API or to remote model providers through the companion server. This approach requires developers to configure raw model API keys in environment files. It also prevents developers from using their existing local agent environments, such as Google Antigravity or OpenAI Codex. Connecting to local agent runtimes lets developers test WebMCP tools with their preferred agent environments and select available models or reasoning settings without managing raw API keys.
 
 ### What would you like to see?
 
-Add an ACP client backend and an in-process Model Context Protocol (MCP) server to the companion server.
+Add support to the companion server for local agent runtimes that implement the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/), with a bridge to expose active tab WebMCP tools through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 
-The proposed architecture includes:
-- **Agent Client Protocol connection**: Connect the companion server to local agent runtimes over UNIX domain sockets, named pipes, or TCP loopback.
-- **Capability restrictions**: Advertise `clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` during ACP initialization to prevent host filesystem access or terminal command execution.
-- **Model discovery**: Use ACP `configOptions` to discover available models and reasoning levels directly from the agent runtime without managing raw API keys.
-- **Session configuration**: Pass `mcpServers` during `session/new` so the agent runtime can discover and call available MCP tools.
-- **In-process Model Context Protocol server**: Expose an MCP endpoint on the companion server that maps WebMCP tools from the active browser tab into MCP tool definitions.
-- **Tool execution delegation**: Forward MCP `tools/call` requests from the companion server to the extension side panel. The extension side panel evaluates permissions, prompts the user when required, executes `document.modelContext.executeTool()` in the active tab context, applies guardrails, and returns the result through the companion server to complete the MCP tool call.
-
-#### Protocol interaction flow
-
-```mermaid
-sequenceDiagram
-    participant User as Developer (Extension Side Panel)
-    participant Server as Companion Server
-    participant Agent as Local ACP Agent
-    participant Tab as Active Tab DOM
-
-    Note over Server,Agent: ACP initialize (clientCapabilities: fs false, terminal false)
-    User->>Server: Start session
-    Server->>Agent: ACP session/new (mcpServers: companion MCP endpoint)
-    Agent->>Server: MCP tools/list
-    Server-->>Agent: Available WebMCP tool definitions
-    User->>Server: Submit prompt
-    Server->>Agent: ACP session/prompt
-    Agent->>Server: MCP tools/call (toolName, arguments)
-    Server->>User: Request tool execution
-    alt Approval required (consequentialHint == true or readOnlyHint == false)
-        User->>User: Display confirmation prompt
-        User-->>User: Developer approves execution
-    end
-    User->>Tab: document.modelContext.executeTool()
-    Tab-->>User: Tool output
-    User->>User: Apply spotlighting (untrustedContentHint) and truncation
-    User-->>Server: Return sanitized tool result
-    Server-->>Agent: MCP tools/call response
-    Agent-->>Server: ACP session/update (streamed text and reasoning)
-    Server-->>User: Stream response chunks
-```
+Both specifications serve distinct roles in this workflow:
+- **Agent Client Protocol (ACP)**: Connects the companion server to local agent runtimes across standard transport options, such as stdio child processes, local sockets, or network bridges. When the agent runtime supports configuration discovery, the companion server can query available models and reasoning effort levels without requiring raw API keys.
+- **Model Context Protocol (MCP)**: Bridges tools from `document.modelContext` in the active browser tab to the agent. When an agent requests a tool call, the extension executes `document.modelContext.executeTool()` in the browser tab and returns the output to the agent.
 
 ### Security considerations
 
-- **Host capability restrictions**: The companion server advertises `clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` during ACP initialization. The server rejects any agent requests to read files, write files, or execute terminal commands on the host.
-- **Human-in-the-loop approval**: The extension side panel gates tool execution. Tools with `consequentialHint: true` or without `readOnlyHint` require explicit developer approval before execution in the active tab.
-- **Untrusted content handling**: Output from `document.modelContext.executeTool()` is treated as untrusted data. The extension side panel applies spotlighting for tools marked with `untrustedContentHint` and enforces character truncation limits before returning results to the agent.
-- **Process isolation**: The companion server connects to external agent sockets rather than managing agent process lifecycles.
+The primary security concern is protecting host system resources from untrusted web content. Local agent runtimes frequently have access to the local filesystem and terminal commands. When the companion server connects to an ACP runtime, it must restrict client capabilities to disable filesystem access and terminal execution.
+
+Executing tool calls in the browser maintains the extension's existing guardrails. The extension side panel continues to manage user confirmation for non-read-only or consequential tools, spotlight untrusted content, and enforce character truncation limits before passing web page data back to the agent.
