@@ -492,6 +492,9 @@ export function useAgentSession(
     if (!internals.chatId) {
       internals.chatId = crypto.randomUUID();
     }
+    if (!state.currentSessionId && !internals.currentSessionId) {
+      tabSessions.assignSessionId(tabId, textToSend);
+    }
     tabSessions.update(tabId, (previous) => ({
       busy: true,
       userPrompt: '',

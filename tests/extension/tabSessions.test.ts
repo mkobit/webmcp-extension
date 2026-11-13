@@ -1717,3 +1717,58 @@ test('tabSessions.migrateTab moves state, internals, and storage keys to new tab
     browser.restore();
   }
 });
+
+test('tabSessions.resumeSession hydrates session and updates currentSessionId', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const tabId = 30;
+    const sessionId = 'session-resume-1';
+    const domain = 'my.moergo.com';
+    const origin = 'https://my.moergo.com';
+
+    await chrome.storage.local.set({
+      [`session_v1_${sessionId}`]: {
+        id: sessionId,
+        domain,
+        origin,
+        title: 'Resumed conversation',
+        createdAt: 1000,
+        updatedAt: 2000,
+        messageCount: 1,
+        messages: [{ id: 50, role: 'user', text: 'Resumed message' }],
+        activityLog: [{ id: 60, name: 'tool_resume', done: true, status: 'success' }],
+        tokenUsage: { promptTokens: 15, completionTokens: 25, totalTokens: 40 },
+        codexThreadId: 'thread-resume-xyz',
+      },
+    });
+
+    const success = await tabSessions.resumeSession(tabId, sessionId);
+    assert.equal(success, true);
+
+    const state = tabSessions.getState(tabId);
+    assert.equal(state.currentSessionId, sessionId);
+    assert.equal(state.messages.length, 1);
+    assert.equal(state.messages[0].text, 'Resumed message');
+    assert.equal(state.activityLog.length, 1);
+    assert.deepEqual(state.sessionTokenUsage, { promptTokens: 15, completionTokens: 25, totalTokens: 40 });
+    assert.equal(tabSessions.getInternals(tabId).codexThreadId, 'thread-resume-xyz');
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});
+
+test('tabSessions.assignSessionId assigns unique ID and title from prompt', () => {
+  resetTabSessions();
+  try {
+    const tabId = 31;
+    const sid = tabSessions.assignSessionId(tabId, 'Where is my order?');
+    assert.ok(sid);
+    const state = tabSessions.getState(tabId);
+    assert.equal(state.currentSessionId, sid);
+    assert.equal(state.sessionTitle, 'Where is my order?');
+  } finally {
+    resetTabSessions();
+  }
+});
