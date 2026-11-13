@@ -104,7 +104,6 @@ export function useActiveTabTools(activeTabId: number | null): UseActiveTabTools
       if (tabId == null) return;
 
       const pageUrl = url || sender?.tab?.url || '';
-      if (pageUrl) bumpTabSeq(tabId);
       tabSessions.update(tabId, (previous) => ({
         statusMsg: message !== undefined ? message : tools !== undefined ? '' : previous.statusMsg,
         tools: tools !== undefined ? tools : previous.tools,
@@ -132,14 +131,23 @@ export function useActiveTabTools(activeTabId: number | null): UseActiveTabTools
         tabSeqRef.current.delete(tabId);
         return;
       }
+      if (changeInfo.status === 'loading') {
+        void tabSessions.flushActiveSession(tabId);
+      }
       // The tools of the page being left no longer exist. Clearing them keeps
       // a turn from declaring tools that have gone.
       if (changeInfo.url) {
+        const nextOrigin = originOfUrl(changeInfo.url);
+        const currentOrigin = tabSessions.getState(tabId).origin;
+        if (nextOrigin && currentOrigin && nextOrigin !== currentOrigin) {
+          void tabSessions.flushActiveSession(tabId);
+          tabSessions.resetChat(tabId);
+        }
         tabSessions.update(tabId, {
           tools: [],
           statusMsg: '',
           domain: domainFor(changeInfo.url),
-          origin: originOfUrl(changeInfo.url),
+          origin: nextOrigin,
           favicon: faviconFor(changeInfo.url),
         });
       }

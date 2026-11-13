@@ -62,8 +62,9 @@ export function useActiveTabId(options: UseActiveTabIdOptions = {}): number | nu
       tabSessions.remove(removedTabId, { onDevice: onDeviceModelRef.current });
       void sync();
     };
-    const onReplaced = (_addedTabId: number, removedTabId: number) => {
-      onRemoved(removedTabId);
+    const onReplaced = (addedTabId: number, removedTabId: number) => {
+      void tabSessions.migrateTab(removedTabId, addedTabId);
+      void sync();
     };
 
     chromeApi.tabs.onActivated?.addListener(onActivated);

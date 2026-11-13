@@ -1671,3 +1671,49 @@ test('tab removed cleans up persisted storage for that tab', async () => {
     browser.restore();
   }
 });
+
+test('tabSessions.migrateTab moves state, internals, and storage keys to new tab ID', async () => {
+  resetTabSessions();
+  const browser = installTestChrome();
+  try {
+    const fromTabId = 20;
+    const toTabId = 21;
+    const origin = 'https://example.com';
+    const oldKey = `active_session_${origin}_${fromTabId}`;
+    const newKey = `active_session_${origin}_${toTabId}`;
+
+    await chrome.storage.local.set({
+      [oldKey]: {
+        version: 1,
+        origin,
+        tabId: fromTabId,
+        updatedAt: Date.now(),
+        messages: [{ id: 1, role: 'user', text: 'Migrating message' }],
+      },
+    });
+
+    tabSessions.update(fromTabId, {
+      origin,
+      domain: 'example.com',
+      messages: [{ id: 1, role: 'user', text: 'Migrating message' }],
+    });
+    tabSessions.getInternals(fromTabId).codexThreadId = 'thread-to-migrate';
+
+    await tabSessions.migrateTab(fromTabId, toTabId);
+
+    // Old tab state should be gone, new tab state present
+    assert.equal(tabSessions.getState(fromTabId).messages.length, 0);
+    assert.equal(tabSessions.getState(toTabId).messages.length, 1);
+    assert.equal(tabSessions.getState(toTabId).messages[0].text, 'Migrating message');
+    assert.equal(tabSessions.getInternals(toTabId).codexThreadId, 'thread-to-migrate');
+
+    // Storage key should be migrated
+    assert.equal((await chrome.storage.local.get(oldKey))[oldKey], undefined);
+    const newStored = (await chrome.storage.local.get(newKey))[newKey] as { tabId: number };
+    assert.ok(newStored);
+    assert.equal(newStored.tabId, toTabId);
+  } finally {
+    resetTabSessions();
+    browser.restore();
+  }
+});

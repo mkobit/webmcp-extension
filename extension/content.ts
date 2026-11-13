@@ -24,7 +24,7 @@ chrome.runtime.onMessage.addListener((message: ContentMessage, _sender, reply) =
   const { action, name, inputArgs, fromOrigins = [] } = message;
   const modelContext = document.modelContext;
   if (!modelContext) {
-    chrome.runtime.sendMessage({ message: WEBMCP_DISABLED_MESSAGE });
+    chrome.runtime.sendMessage({ message: WEBMCP_DISABLED_MESSAGE, url: window.location.href });
     // A tool call still gets an answer, so the model hears why it failed
     // instead of a closed message port.
     if (action === 'EXECUTE_TOOL') reply(JSON.stringify(WEBMCP_DISABLED_MESSAGE));

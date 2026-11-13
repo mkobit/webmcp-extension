@@ -46,6 +46,33 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
+// Migrate persisted session storage when a tab is replaced (e.g. prerendering).
+chrome.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
+  if (!chrome.storage?.local) return;
+  try {
+    const all = await chrome.storage.local.get(null);
+    const oldSuffix = `_${removedTabId}`;
+    const newSuffix = `_${addedTabId}`;
+    const updates: Record<string, unknown> = {};
+    const removals: string[] = [];
+    for (const [key, value] of Object.entries(all)) {
+      if (key.startsWith('active_session_') && key.endsWith(oldSuffix)) {
+        const newKey = key.slice(0, key.length - oldSuffix.length) + newSuffix;
+        updates[newKey] = { ...(value as object), tabId: addedTabId };
+        removals.push(key);
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      await chrome.storage.local.set(updates);
+    }
+    if (removals.length > 0) {
+      await chrome.storage.local.remove(removals);
+    }
+  } catch (error) {
+    console.debug('[WebMCP] Failed to migrate storage on tab replace:', error);
+  }
+});
+
 async function updateBadge(tabId: number): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id !== tabId) return;

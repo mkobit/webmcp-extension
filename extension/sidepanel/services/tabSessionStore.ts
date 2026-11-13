@@ -362,6 +362,47 @@ class TabSessionStore {
   }
 
   /**
+   * Migrates session and storage from an old tab ID to a new tab ID when Chrome
+   * replaces a tab (e.g. on prerendering or instant navigation).
+   */
+  migrateTab = async (fromTabId: number, toTabId: number): Promise<void> => {
+    const pending = this.pendingWrites.get(fromTabId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingWrites.delete(fromTabId);
+    }
+
+    const state = this.states.get(fromTabId);
+    const internals = this.internals.get(fromTabId);
+    if (!state && !internals) return;
+
+    if (state) {
+      this.states.set(toTabId, state);
+      this.states.delete(fromTabId);
+    }
+    if (internals) {
+      this.internals.set(toTabId, internals);
+      this.internals.delete(fromTabId);
+    }
+
+    if (state?.origin && typeof chrome !== 'undefined' && chrome?.storage?.local) {
+      const oldKey = getSessionStorageKey(state.origin, fromTabId);
+      const newKey = getSessionStorageKey(state.origin, toTabId);
+      try {
+        const result = await chrome.storage.local.get(oldKey);
+        const data = result[oldKey] as PersistedSessionData | undefined;
+        if (data) {
+          await chrome.storage.local.set({ [newKey]: { ...data, tabId: toTabId } });
+          await chrome.storage.local.remove(oldKey);
+        }
+      } catch (error) {
+        console.warn('[WebMCP] Failed to migrate tab session storage:', error);
+      }
+    }
+    this.emit();
+  };
+
+  /**
    * Stops and forgets a tab's session, for a tab that has been closed. The
    * conversation is ended on the backend too, so a chat nothing can reach
    * again does not sit there holding context.
@@ -421,4 +462,8 @@ export function restoreActiveSession(tabId: number, origin: string): Promise<boo
 
 export function clearActiveSession(tabId: number, origin: string): Promise<void> {
   return tabSessions.clearActiveSession(tabId, origin);
+}
+
+export function migrateTab(fromTabId: number, toTabId: number): Promise<void> {
+  return tabSessions.migrateTab(fromTabId, toTabId);
 }
