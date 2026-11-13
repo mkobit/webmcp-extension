@@ -488,3 +488,50 @@ test('ActionLogCard renders error indicator and error message on failure', () =>
   assert.ok(html.includes('action-log__card-field--error'));
   assert.ok(html.includes('Card declined'));
 });
+
+test('SessionList renders session cards with title, relative time, message count, and delete action', () => {
+  const { SessionList } = require('../../extension/sidepanel/components/SessionList.js');
+  const now = Date.now();
+  const html = renderToString(
+    React.createElement(SessionList, {
+      domain: 'my.moergo.com',
+      sessions: [
+        {
+          id: 's1',
+          domain: 'my.moergo.com',
+          origin: 'https://my.moergo.com',
+          title: 'Inspect layout settings',
+          createdAt: now - 120000,
+          updatedAt: now - 120000,
+          messageCount: 3,
+        },
+      ],
+      onSelectSession: () => {},
+      onDeleteSession: () => {},
+      onNewChat: () => {},
+    })
+  );
+
+  assert.ok(html.includes('session-list'));
+  assert.ok(html.includes('Inspect layout settings'));
+  assert.ok(html.includes('2 minutes ago'));
+  assert.ok(html.includes('3 msgs'));
+  assert.ok(html.includes('Delete session Inspect layout settings'));
+  assert.ok(html.includes('Start new chat'));
+});
+
+test('SessionList renders empty state when no sessions exist', () => {
+  const { SessionList } = require('../../extension/sidepanel/components/SessionList.js');
+  const html = renderToString(
+    React.createElement(SessionList, {
+      domain: 'my.moergo.com',
+      sessions: [],
+      onSelectSession: () => {},
+      onDeleteSession: () => {},
+      onNewChat: () => {},
+    })
+  );
+
+  assert.ok(html.includes('session-list--empty'));
+  assert.ok(html.includes('No past sessions'));
+});

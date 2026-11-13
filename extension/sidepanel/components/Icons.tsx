@@ -82,6 +82,8 @@ export const ShieldIcon = (p: IconProp) => <SymbolIcon name="shield" size={20} {
 export const DeviceIcon = (p: IconProp) => <SymbolIcon name="devices" size={20} {...p} />;
 export const RefreshIcon = (p: IconProp) => <SymbolIcon name="refresh" size={18} {...p} />;
 export const DownloadIcon = (p: IconProp) => <SymbolIcon name="download" size={20} {...p} />;
+export const HistoryIcon = (p: IconProp) => <SymbolIcon name="history" size={20} {...p} />;
+export const TrashIcon = (p: IconProp) => <SymbolIcon name="delete" size={18} {...p} />;
 
 export function PlayArrowIcon({ size = 14, color = 'currentColor' }: LogoProps) {
   return (
