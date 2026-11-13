@@ -1968,3 +1968,173 @@ main {
 .tool-permission-card--consequential .tool-permission-card__btn--allow:active {
   background-color: #6d1611;
 }
+
+/* --------------------------------------------------------------------------
+   Session list & history cards
+   -------------------------------------------------------------------------- */
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.session-list__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 2px;
+}
+
+.session-list__header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-list__title {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-blue-dark);
+}
+
+.session-list__domain {
+  font-size: 11px;
+  color: var(--color-on-surface-variant);
+}
+
+.session-list__new-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  background-color: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  color: var(--color-blue-dark);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.session-list__new-btn:hover {
+  background-color: var(--color-blue-light);
+}
+
+.session-list--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background-color: var(--color-surface-container-low);
+  border: 1px dashed var(--color-outline-variant);
+  border-radius: 12px;
+  gap: 8px;
+  text-align: center;
+}
+
+.session-list__empty-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-on-surface-variant);
+}
+
+.session-list__empty-action {
+  background: transparent;
+  border: none;
+  color: var(--color-blue-mid);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  text-decoration: underline;
+}
+
+.session-list__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background-color: var(--color-surface-container-low);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  outline: none;
+}
+
+.session-card:hover {
+  background-color: var(--color-surface-container);
+  border-color: var(--color-blue-mid);
+  box-shadow: var(--shadow-sm);
+}
+
+.session-card:focus-visible {
+  border-color: var(--color-blue-mid);
+  box-shadow: 0 0 0 2px var(--color-blue-light);
+}
+
+.session-card__content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-card__title {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-on-surface-variant);
+}
+
+.session-card__dot {
+  font-size: 10px;
+}
+
+.session-card__delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-on-surface-variant);
+  opacity: 0.7;
+  transition: all var(--transition-fast);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.session-card__delete-btn:hover {
+  opacity: 1;
+  background-color: var(--color-error-container);
+  color: var(--color-error);
+}
