@@ -27,6 +27,12 @@ import { ActionLog } from './components/ActionLog.js';
 import { OnDeviceModelStatus } from './components/OnDeviceModelStatus.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { EditSquareIcon } from './components/Icons.js';
+import { SessionList } from './components/SessionList.js';
+import {
+  listDomainSessions,
+  deleteStoredSession,
+  type SessionSummary,
+} from './services/sessionHistoryStore.js';
 
 import { useActiveTabId } from './hooks/useActiveTabId.js';
 import { useActiveTabTools } from './hooks/useActiveTabTools.js';
@@ -131,6 +137,10 @@ export function App() {
       return next;
     });
   };
+
+  const [viewMode, setViewMode] = useState<'chat' | 'history'>('chat');
+  const [domainSessions, setDomainSessions] = useState<SessionSummary[]>([]);
+  const [hasDismissedHistory, setHasDismissedHistory] = useState<boolean>(false);
 
   const handleChangeBackendMode = (mode: BackendMode) => {
     if (anyBusy) return;
@@ -253,6 +263,70 @@ export function App() {
     return () => clearTimeout(timer);
   }, [messages, busy, streamingText]);
 
+  const fetchDomainSessions = useCallback(async () => {
+    if (!domain || domain === 'New Tab') {
+      setDomainSessions([]);
+      return;
+    }
+    const list = await listDomainSessions(domain);
+    setDomainSessions(list);
+  }, [domain]);
+
+  useEffect(() => {
+    setHasDismissedHistory(false);
+    void fetchDomainSessions();
+  }, [domain, fetchDomainSessions]);
+
+  const handleSelectSession = useCallback(
+    async (sessionId: string) => {
+      if (activeTabId != null) {
+        await tabSessions.resumeSession(activeTabId, sessionId);
+        setViewMode('chat');
+        setHasDismissedHistory(true);
+      }
+    },
+    [activeTabId]
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      if (domain) {
+        await deleteStoredSession(domain, sessionId);
+        await fetchDomainSessions();
+        if (activeTabId != null) {
+          const state = tabSessions.getState(activeTabId);
+          if (state.currentSessionId === sessionId) {
+            handleReset();
+          }
+        }
+      }
+    },
+    [domain, activeTabId, fetchDomainSessions, handleReset]
+  );
+
+  const handleNewChat = useCallback(() => {
+    handleReset();
+    setViewMode('chat');
+    setHasDismissedHistory(true);
+    void fetchDomainSessions();
+  }, [handleReset, fetchDomainSessions]);
+
+  const handleToggleHistory = useCallback(() => {
+    setViewMode((prev) => (prev === 'history' ? 'chat' : 'history'));
+    void fetchDomainSessions();
+  }, [fetchDomainSessions]);
+
+  const handleSendPromptAndSwitch = useCallback(async () => {
+    setViewMode('chat');
+    setHasDismissedHistory(true);
+    await handleSendPrompt();
+    void fetchDomainSessions();
+  }, [handleSendPrompt, fetchDomainSessions]);
+
+  const isShowingHistory =
+    viewMode === 'history' ||
+    (messages.length === 0 && !busy && domainSessions.length > 0 && !hasDismissedHistory);
+
   // Derive dynamic welcome subtitle topic based on active domain
   const domainTopic = domain && domain !== 'New Tab' ? domain : 'your tasks';
 
@@ -324,61 +398,71 @@ export function App() {
           <section className="view chat-view">
             {/* Chat Stream Area */}
             <div id="chatStream">
-              {messages.length === 0 && (
-                <div id="welcomeCard" className="welcome-card">
-                  <div className="welcome-card__header">
-                    <h1 className="welcome-title">Hi there!</h1>
-                  </div>
-                  <p className="welcome-subtitle">
-                    {tools.length > 0
-                      ? `How can I help you with ${domainTopic}?`
-                      : 'How can I help you?'}
-                  </p>
+              {isShowingHistory ? (
+                <SessionList
+                  domain={domain}
+                  sessions={domainSessions}
+                  onSelectSession={handleSelectSession}
+                  onDeleteSession={handleDeleteSession}
+                  onNewChat={handleNewChat}
+                />
+              ) : (
+                <>
+                  {messages.length === 0 && (
+                    <div id="welcomeCard" className="welcome-card">
+                      <div className="welcome-card__header">
+                        <h1 className="welcome-title">Hi there!</h1>
+                      </div>
+                      <p className="welcome-subtitle">
+                        {tools.length > 0
+                          ? `How can I help you with ${domainTopic}?`
+                          : 'How can I help you?'}
+                      </p>
 
-                  <div className="action-chips">
-                    {welcomeActionChips.map((chip) => (
-                      <button
-                        key={chip.text}
-                        className="action-chip"
-                        onClick={() => setUserPrompt(chip.text)}
-                      >
-                        <span>{chip.text}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Chat Messages Card */}
-              {messages.length > 0 && (
-                <div className="chat-card">
-                  <div className="chat-card__header">
-                    <div className="chat-card__header-metrics">
-                      {onDeviceModel && contextUsage && <ContextMeter {...contextUsage} />}
-                      {sessionTokenUsage && (
-                        <div
-                          className="session-tokens"
-                          title={`Session tokens: ${sessionTokenUsage.totalTokens.toLocaleString()} (${sessionTokenUsage.promptTokens.toLocaleString()} prompt / ${sessionTokenUsage.completionTokens.toLocaleString()} completion)`}
-                          aria-label={`Session tokens: ${sessionTokenUsage.totalTokens} tokens`}
-                        >
-                          <span className="session-tokens__count">
-                            {sessionTokenUsage.totalTokens.toLocaleString()} tokens
-                          </span>
-                        </div>
-                      )}
+                      <div className="action-chips">
+                        {welcomeActionChips.map((chip) => (
+                          <button
+                            key={chip.text}
+                            className="action-chip"
+                            onClick={() => setUserPrompt(chip.text)}
+                          >
+                            <span>{chip.text}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      className="chat-card__new-chat-btn"
-                      onClick={handleReset}
-                      title="Start new chat"
-                      aria-label="Start new chat"
-                    >
-                      <EditSquareIcon size={20} color="#012c6f" />
-                    </button>
-                  </div>
+                  )}
 
-                  <div className="chat-card__messages">
+                  {/* Chat Messages Card */}
+                  {messages.length > 0 && (
+                    <div className="chat-card">
+                      <div className="chat-card__header">
+                        <div className="chat-card__header-metrics">
+                          {onDeviceModel && contextUsage && <ContextMeter {...contextUsage} />}
+                          {sessionTokenUsage && (
+                            <div
+                              className="session-tokens"
+                              title={`Session tokens: ${sessionTokenUsage.totalTokens.toLocaleString()} (${sessionTokenUsage.promptTokens.toLocaleString()} prompt / ${sessionTokenUsage.completionTokens.toLocaleString()} completion)`}
+                              aria-label={`Session tokens: ${sessionTokenUsage.totalTokens} tokens`}
+                            >
+                              <span className="session-tokens__count">
+                                {sessionTokenUsage.totalTokens.toLocaleString()} tokens
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="chat-card__new-chat-btn"
+                          onClick={handleNewChat}
+                          title="Start new chat"
+                          aria-label="Start new chat"
+                        >
+                          <EditSquareIcon size={20} color="#012c6f" />
+                        </button>
+                      </div>
+
+                      <div className="chat-card__messages">
                     {/* Messages and Logs */}
                     {messages.map((msg) => {
                       if (msg.role === 'user') {
@@ -451,58 +535,62 @@ export function App() {
                   </div>
                 </div>
               )}
+            </>
+          )}
+        </div>
+
+        {/* Bottom Floating Composer */}
+        <footer className="composer-footer">
+          {/* Floating WebMCP Tools Dialogue Popover */}
+          {showToolsDialogue && (
+            <div className="floating-popover">
+              <WebMCPToolsDialogue
+                domain={domain || 'page'}
+                toolsCount={tools.length}
+                toolsList={tools.map((t) => t.description || t.name)}
+                onClose={() => setShowToolsDialogue(false)}
+              />
             </div>
+          )}
 
-            {/* Bottom Floating Composer */}
-            <footer className="composer-footer">
-              {/* Floating WebMCP Tools Dialogue Popover */}
-              {showToolsDialogue && (
-                <div className="floating-popover">
-                  <WebMCPToolsDialogue
-                    domain={domain || 'page'}
-                    toolsCount={tools.length}
-                    toolsList={tools.map((t) => t.description || t.name)}
-                    onClose={() => setShowToolsDialogue(false)}
-                  />
-                </div>
-              )}
+          {/* Floating IPH Popover */}
+          {showIPHPopover && (
+            <div className="floating-popover">
+              <IPHPopover
+                onClose={() => setShowIPHPopover(false)}
+                onViewActions={() => {
+                  setShowIPHPopover(false);
+                  setShowToolsDialogue(true);
+                }}
+                onGotIt={() => setShowIPHPopover(false)}
+              />
+            </div>
+          )}
 
-              {/* Floating IPH Popover */}
-              {showIPHPopover && (
-                <div className="floating-popover">
-                  <IPHPopover
-                    onClose={() => setShowIPHPopover(false)}
-                    onViewActions={() => {
-                      setShowIPHPopover(false);
-                      setShowToolsDialogue(true);
-                    }}
-                    onGotIt={() => setShowIPHPopover(false)}
-                  />
-                </div>
-              )}
-
-              <ChatBubble
-                showTab={Boolean(domain && domain !== 'New Tab')}
-                tabProps={{
-                  domain: domain || 'New Tab',
-                  faviconUrl: favicon,
-                  hasTools: tools.length > 0,
-                  toolsCountLabel: `${tools.length} tools`,
-                  onToggleExpand: handleBadgeClick,
-                }}
-                textProps={{
-                  value: userPrompt,
-                  placeholder: 'Ask Agent anything',
-                  onChange: (e) => setUserPrompt(e.target.value),
-                  onSubmit: handleSendPrompt,
-                }}
-                toolbarProps={{
-                  actionVariant: busy ? 'stop' : userPrompt.trim() ? 'send' : 'live',
-                  onActionClick: busy ? handleStop : handleSendPrompt,
-                  onSettingsClick: () => setShowSettings(true),
-                  onExportTrace: handleExportTrace,
-                  canExport: messages.length > 0,
-                }}
+          <ChatBubble
+            showTab={Boolean(domain && domain !== 'New Tab')}
+            tabProps={{
+              domain: domain || 'New Tab',
+              faviconUrl: favicon,
+              hasTools: tools.length > 0,
+              toolsCountLabel: `${tools.length} tools`,
+              onToggleExpand: handleBadgeClick,
+            }}
+            textProps={{
+              value: userPrompt,
+              placeholder: 'Ask Agent anything',
+              onChange: (e) => setUserPrompt(e.target.value),
+              onSubmit: handleSendPromptAndSwitch,
+            }}
+            toolbarProps={{
+              actionVariant: busy ? 'stop' : userPrompt.trim() ? 'send' : 'live',
+              onActionClick: busy ? handleStop : handleSendPromptAndSwitch,
+              onSettingsClick: () => setShowSettings(true),
+              onExportTrace: handleExportTrace,
+              canExport: messages.length > 0,
+              onToggleHistory: handleToggleHistory,
+              showingHistory: isShowingHistory,
+            }}
                 permissionProps={
                   pendingPermission
                     ? {

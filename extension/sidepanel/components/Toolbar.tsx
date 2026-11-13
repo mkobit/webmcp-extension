@@ -4,7 +4,7 @@
  */
 
 import { ButtonUI, type ButtonVariant } from './ButtonUI.js';
-import { DownloadIcon, SettingsIcon } from './Icons.js';
+import { DownloadIcon, HistoryIcon, SettingsIcon } from './Icons.js';
 
 export interface ToolbarProps {
   actionVariant?: ButtonVariant;
@@ -12,6 +12,8 @@ export interface ToolbarProps {
   onSettingsClick?: () => void;
   onExportTrace?: () => void;
   canExport?: boolean;
+  onToggleHistory?: () => void;
+  showingHistory?: boolean;
 }
 
 /**
@@ -24,6 +26,8 @@ export function Toolbar({
   onSettingsClick,
   onExportTrace,
   canExport = true,
+  onToggleHistory,
+  showingHistory = false,
 }: ToolbarProps) {
   return (
     <div className="toolbar">
@@ -36,6 +40,20 @@ export function Toolbar({
           title="Settings"
         >
           <SettingsIcon size={20} color="var(--color-on-surface-variant)" />
+        </button>
+      )}
+      {onToggleHistory && (
+        <button
+          type="button"
+          className={`toolbar__history-btn ${showingHistory ? 'toolbar__history-btn--active' : ''}`}
+          onClick={onToggleHistory}
+          aria-label={showingHistory ? 'Show active chat' : 'Show past sessions'}
+          title={showingHistory ? 'Show active chat' : 'Show past sessions'}
+        >
+          <HistoryIcon
+            size={20}
+            color={showingHistory ? 'var(--color-blue-dark)' : 'var(--color-on-surface-variant)'}
+          />
         </button>
       )}
       {onExportTrace && (
