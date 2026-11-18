@@ -38,7 +38,7 @@ import { useActiveTabId } from './hooks/useActiveTabId.js';
 import { useActiveTabTools } from './hooks/useActiveTabTools.js';
 import { useAgentSession } from './hooks/useAgentSession.js';
 import { flushActiveSession, tabSessions } from './services/tabSessionStore.js';
-import { exportSessionTrace } from './services/traceExport.js';
+import { copySessionTrace } from './services/traceExport.js';
 import { type ContextUsage, isPromptApiSupported, prepareOnDeviceModel } from './services/promptApiBackend.js';
 
 /** Starts the on-device model download; a failure only means it starts later, with the first message. */
@@ -226,13 +226,21 @@ export function App() {
   // The agent is waiting on the user: to allow a tool, or to keep using tools.
   const waitingOnUser = Boolean(pendingPermission || pendingCheckpoint);
 
-  const handleExportTrace = useCallback(() => {
+  const [copyStatus, setCopyStatus] = useState('');
+
+  const handleExportTrace = useCallback(async () => {
     if (activeTabId != null) {
       const state = tabSessions.getState(activeTabId);
-      exportSessionTrace({
-        ...state,
-        tools: state.tools.length > 0 ? state.tools : tools,
-      });
+      setCopyStatus('');
+      try {
+        await copySessionTrace({
+          ...state,
+          tools: state.tools.length > 0 ? state.tools : tools,
+        });
+        setCopyStatus('Session JSON copied to clipboard.');
+      } catch {
+        setCopyStatus('Could not copy session JSON. Try again.');
+      }
     }
   }, [activeTabId, tools]);
 
@@ -362,6 +370,7 @@ export function App() {
     <div className="agent-screen-shell">
       {/* Error / Status Notice */}
       {statusMsg && <div id="status">{statusMsg}</div>}
+      {copyStatus && <div role="status">{copyStatus}</div>}
 
       {/* On-device model status, outside <main> so settings cannot unmount it mid-download */}
       {onDeviceModelSupported && <OnDeviceModelStatus onContextUsage={setContextUsage} />}

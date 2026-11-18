@@ -8,24 +8,9 @@ import assert from 'node:assert/strict';
 
 import {
   buildSessionTrace,
-  exportSessionTrace,
-  getTraceFilename,
-  sanitizeOrigin,
+  copySessionTrace,
 } from '../../extension/sidepanel/services/traceExport.js';
 import type { TabSessionState } from '../../extension/sidepanel/services/tabSessionStore.js';
-
-test('sanitizeOrigin transforms origins into file name safe strings', () => {
-  assert.equal(sanitizeOrigin('http://localhost:3000'), 'localhost-3000');
-  assert.equal(sanitizeOrigin('https://example.com/some/path'), 'example-com-some-path');
-  assert.equal(sanitizeOrigin('https://sub.domain.org:8443'), 'sub-domain-org-8443');
-  assert.equal(sanitizeOrigin(''), 'session');
-});
-
-test('getTraceFilename formats the trace download file name', () => {
-  const ts = 1700000000000;
-  const filename = getTraceFilename('http://localhost:3000', ts);
-  assert.equal(filename, 'webmcp-trace-localhost-3000-1700000000000.json');
-});
 
 test('buildSessionTrace creates version 1 trace export with complete session telemetry', () => {
   const state: TabSessionState = {
@@ -89,72 +74,45 @@ test('buildSessionTrace creates version 1 trace export with complete session tel
   assert.equal(trace.tools[0].name, 'search_products');
 });
 
-test('exportSessionTrace creates blob, triggers anchor download, and revokes URL', () => {
-  const originalDocument = globalThis.document;
-  const originalURL = globalThis.URL;
+const copyState: TabSessionState = {
+  userPrompt: '',
+  messages: [{ id: 1, role: 'user', text: 'Hello' }],
+  busy: false,
+  activityLog: [],
+  streamingText: '',
+  pendingPermission: null,
+  pendingCheckpoint: null,
+  tools: [],
+  domain: 'localhost:3000',
+  origin: 'http://localhost:3000',
+  favicon: '',
+  statusMsg: '',
+};
 
-  let clicked = false;
-  let downloadedFileName = '';
-  let objectUrlCreated = false;
-  let revokedUrl = '';
+test('copySessionTrace copies formatted session JSON to the clipboard', async (t) => {
+  let copiedText = '';
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async (text: string) => { copiedText = text; },
+  } });
+  t.after(() => { Reflect.deleteProperty(navigator, 'clipboard'); });
 
-  const mockLink = {
-    href: '',
-    download: '',
-    click: () => {
-      clicked = true;
-      downloadedFileName = mockLink.download;
-    },
-  };
+  await copySessionTrace(copyState);
 
-  const mockBody = {
-    appendChild: (node: unknown) => node,
-    removeChild: (node: unknown) => node,
-  };
+  const copied = JSON.parse(copiedText);
+  assert.deepEqual(copied.messages, [{ id: 1, role: 'user', text: 'Hello' }]);
+  assert.equal(copied.origin, 'http://localhost:3000');
+  assert.equal(copied.version, 1);
+  assert.deepEqual(copied.activityLog, []);
+  assert.deepEqual(copied.tools, []);
+  assert.ok(!Number.isNaN(Date.parse(copied.exportedAt)));
+  assert.equal(copiedText, JSON.stringify(copied, null, 2));
+});
 
-  globalThis.document = {
-    body: mockBody,
-    createElement: (tag: string) => {
-      if (tag === 'a') return mockLink;
-      throw new Error(`Unexpected element ${tag}`);
-    },
-  } as unknown as Document;
+test('copySessionTrace reports a clipboard write failure', async (t) => {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    writeText: async () => { throw new Error('Clipboard denied'); },
+  } });
+  t.after(() => { Reflect.deleteProperty(navigator, 'clipboard'); });
 
-  globalThis.URL = {
-    createObjectURL: (_blob: Blob) => {
-      objectUrlCreated = true;
-      return 'blob:mock-url-1234';
-    },
-    revokeObjectURL: (url: string) => {
-      revokedUrl = url;
-    },
-  } as unknown as typeof URL;
-
-  try {
-    const state: TabSessionState = {
-      userPrompt: '',
-      messages: [{ id: 1, role: 'user', text: 'Hello' }],
-      busy: false,
-      activityLog: [],
-      streamingText: '',
-      pendingPermission: null,
-      pendingCheckpoint: null,
-      tools: [],
-      domain: 'localhost:3000',
-      origin: 'http://localhost:3000',
-      favicon: '',
-      statusMsg: '',
-    };
-
-    exportSessionTrace(state);
-
-    assert.equal(clicked, true);
-    assert.equal(objectUrlCreated, true);
-    assert.equal(mockLink.href, 'blob:mock-url-1234');
-    assert.equal(revokedUrl, 'blob:mock-url-1234');
-    assert.match(downloadedFileName, /^webmcp-trace-localhost-3000-\d+\.json$/);
-  } finally {
-    globalThis.document = originalDocument;
-    globalThis.URL = originalURL;
-  }
+  await assert.rejects(async () => copySessionTrace(copyState), /Clipboard denied/);
 });

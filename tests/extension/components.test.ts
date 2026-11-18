@@ -398,7 +398,7 @@ test('DownloadIcon renders Google Symbol icon download', () => {
   assert.ok(html.includes('cdds-symbol'));
 });
 
-test('Toolbar renders export button and toggles disabled state via canExport', () => {
+test('Toolbar renders copy button and toggles disabled state via canExport', () => {
   const enabledHtml = renderToString(
     React.createElement(Toolbar, {
       onExportTrace: () => {},
@@ -406,7 +406,7 @@ test('Toolbar renders export button and toggles disabled state via canExport', (
     })
   );
   assert.ok(enabledHtml.includes('toolbar__export-btn'));
-  assert.ok(enabledHtml.includes('aria-label="Export trace"'));
+  assert.ok(enabledHtml.includes('aria-label="Copy session JSON"'));
   assert.ok(!enabledHtml.includes('disabled=""'));
 
   const disabledHtml = renderToString(

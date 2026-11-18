@@ -4,7 +4,7 @@
  */
 
 import { ButtonUI, type ButtonVariant } from './ButtonUI.js';
-import { DownloadIcon, HistoryIcon, SettingsIcon } from './Icons.js';
+import { SymbolIcon, HistoryIcon, SettingsIcon } from './Icons.js';
 
 export interface ToolbarProps {
   actionVariant?: ButtonVariant;
@@ -62,10 +62,10 @@ export function Toolbar({
           className="toolbar__export-btn"
           onClick={onExportTrace}
           disabled={!canExport}
-          aria-label="Export trace"
-          title="Export trace"
+          aria-label="Copy session JSON"
+          title="Copy session JSON"
         >
-          <DownloadIcon size={20} color="var(--color-on-surface-variant)" />
+          <SymbolIcon name="content_copy" size={20} color="var(--color-on-surface-variant)" />
         </button>
       )}
       <ButtonUI
