@@ -578,14 +578,23 @@ export function useAgentSession(
     };
 
     try {
-      const toolDecls = buildToolDecls(toolsView.current);
       const acpEnabled = !onDeviceModelRef.current && acpBackendRef.current;
+      const toolDecls = buildToolDecls(toolsView.current).map((decl) => {
+        if (!acpEnabled) return decl;
+        const { name, frameId } = decodeToolName(decl.name);
+        const match = toolsView.current.find(
+          (t) => t.name === name && (frameId === undefined || (t.frameId ?? 0) === frameId)
+        );
+        return match?.untrustedContentHint ? { ...decl, untrustedContentHint: true } : decl;
+      });
       let currentResult: ChatTurnResponse = await sendChatTurn(
         {
           message: textToSend,
           tools: toolDecls,
           chatId: internals.chatId,
-          ...(acpEnabled ? { backend: 'companion-acp' as const } : {}),
+          ...(!onDeviceModelRef.current
+            ? { backend: acpEnabled ? ('companion-acp' as const) : ('provider' as const) }
+            : {}),
           ...(acpEnabled && acpPortRef.current ? { acpPort: acpPortRef.current } : {}),
         },
         { signal, onDevice: onDeviceModelRef.current, onText, onToolCall }

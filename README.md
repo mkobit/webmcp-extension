@@ -189,16 +189,22 @@ through `openai` with `OPENAI_BASE_URL`.
 
 Developers running local ACP agent CLIs (such as Google Antigravity `agy acp` or OpenAI Codex `codex-acp`) can connect the companion server directly to their agent session without needing raw provider API keys:
 
-```env
-BACKEND=acp
-ACP_COMMAND=agy
+```bash
+npm run server -- --acp-runner "agy acp"
 ```
 
-When configured:
-1. The companion server acts as an ACP client to the local agent process.
-2. The companion server starts an in-process MCP server at `http://127.0.0.1:3000/api/mcp` to expose active tab WebMCP tools.
-3. For agents requiring stdio MCP servers, `node server/mcp-relay.js` acts as a zero-dependency relay.
-4. Security guardrails: the client advertises `clientCapabilities: { fs: false, terminal: false }` and denies host command execution requests. Consequential tools (`consequentialHint: true`) require approval in the side panel.
+Or configure via `.env`:
+
+```env
+BACKEND=acp
+ACP_RUNNER=agy acp
+```
+
+When configured (and **External ACP backend** is enabled in the side panel's Settings):
+1. The companion server acts as an ACP client to the local agent process (`--acp-runner`, `ACP_PORT`, or `ACP_SOCKET_PATH`).
+2. The companion server exposes per-session WebMCP tools at `/api/mcp?session=<chatId>` and registers `server/mcp-relay.js` as the stdio MCP server in `session/new` (forwarding `WEBMCP_AUTH_TOKEN`).
+3. Tool calls from the ACP agent are streamed to the side panel, gated by the side panel's permission prompts, executed in the active tab, and returned via `POST /api/mcp/result`.
+4. Security guardrails: the client advertises `clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }` and denies host permission requests. Untrusted tool outputs are Base64-encoded and truncated to 8,000 characters.
 
 To verify interoperability with local agents:
 

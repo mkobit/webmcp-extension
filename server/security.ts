@@ -153,6 +153,12 @@ export function isAllowedOrigin(
     return false;
   }
 
+  if (pathname === '/api/mcp' && !origin) {
+    // Local non-browser MCP relays (such as server/mcp-relay.js) send no Origin
+    // header, and still must pass validateAuthToken.
+    return true;
+  }
+
   // All /api endpoints strictly require a Chrome extension origin
   if (!origin || !origin.startsWith('chrome-extension://')) {
     return false;
