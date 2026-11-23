@@ -47,6 +47,8 @@ export interface ChatTurnRequest {
     };
   }>;
   tools?: ToolDeclaration[];
+  backend?: 'provider' | 'companion-acp';
+  acpPort?: number;
 }
 
 export interface ChatTurnResponse {

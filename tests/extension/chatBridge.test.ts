@@ -202,3 +202,40 @@ test('appendTurnMessages does not reuse an ID-matched response for a second call
   });
 });
 
+test('sendChatTurn forwards mid-stream ACP toolCall events to onToolCall', async () => {
+  const original = globalThis.fetch;
+  const toolCalls: Array<{ callId: string; name: string; args: Record<string, unknown> }> = [];
+  const deltas: string[] = [];
+
+  globalThis.fetch = (async () => {
+    const body =
+      JSON.stringify({ type: 'toolCall', callId: 'call-99', name: 'ping_page', args: { host: 'example.com' } }) +
+      '\n' +
+      JSON.stringify({ delta: 'Done.' }) +
+      '\n' +
+      JSON.stringify({ done: true, chatId: 'acp-1', text: 'Done.', functionCalls: [] }) +
+      '\n';
+    return new Response(body, {
+      headers: { 'Content-Type': 'application/x-ndjson' },
+    });
+  }) as unknown as typeof fetch;
+
+  try {
+    const res = await sendChatTurn(
+      { chatId: 'acp-1', message: 'Ping page', tools: [], backend: 'companion-acp', acpPort: 45123 },
+      {
+        onText: (t) => deltas.push(t),
+        onToolCall: (call) => toolCalls.push(call),
+      }
+    );
+    assert.equal(res.chatId, 'acp-1');
+    assert.equal(res.text, 'Done.');
+    assert.deepEqual(deltas, ['Done.']);
+    assert.deepEqual(toolCalls, [
+      { callId: 'call-99', name: 'ping_page', args: { host: 'example.com' } },
+    ]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+

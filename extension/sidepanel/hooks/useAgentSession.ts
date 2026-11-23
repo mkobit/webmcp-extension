@@ -46,6 +46,10 @@ export interface UseAgentSessionOptions {
   sensitiveActionAlerts?: boolean;
   /** Run the model on the device through the Prompt API instead of the server. */
   onDeviceModel?: boolean;
+  /** Route server turns through the companion ACP backend. */
+  acpBackend?: boolean;
+  /** Optional local ACP TCP port override (127.0.0.1). */
+  acpPort?: number;
   /**
    * The origin of the page the tools belong to, such as `https://example.com`.
    * Permission granted for the rest of the session is remembered against it,
@@ -251,6 +255,22 @@ export function useAgentSession(
     }
     onDeviceModelRef.current = next;
   }, [options?.onDeviceModel]);
+
+  const acpBackendRef = useRef<boolean>(options?.acpBackend ?? false);
+  useEffect(() => {
+    const next = options?.acpBackend ?? false;
+    if (acpBackendRef.current !== next) {
+      for (const tabId of tabSessions.tabIds()) {
+        tabSessions.resetChat(tabId, { onDevice: onDeviceModelRef.current });
+      }
+    }
+    acpBackendRef.current = next;
+  }, [options?.acpBackend]);
+
+  const acpPortRef = useRef<number | undefined>(options?.acpPort);
+  useEffect(() => {
+    acpPortRef.current = options?.acpPort;
+  }, [options?.acpPort]);
 
   // Read when a tool is about to run rather than when the turn started, so a
   // call that follows a navigation is judged against the page it lands on.
@@ -559,11 +579,14 @@ export function useAgentSession(
 
     try {
       const toolDecls = buildToolDecls(toolsView.current);
+      const acpEnabled = !onDeviceModelRef.current && acpBackendRef.current;
       let currentResult: ChatTurnResponse = await sendChatTurn(
         {
           message: textToSend,
           tools: toolDecls,
           chatId: internals.chatId,
+          ...(acpEnabled ? { backend: 'companion-acp' as const } : {}),
+          ...(acpEnabled && acpPortRef.current ? { acpPort: acpPortRef.current } : {}),
         },
         { signal, onDevice: onDeviceModelRef.current, onText, onToolCall }
       );

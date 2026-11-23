@@ -52,6 +52,24 @@ export function App() {
       return false;
     }
   });
+  const [acpBackend, setAcpBackend] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('acpBackend') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [acpPort, setAcpPort] = useState<string>(() => {
+    try {
+      return localStorage.getItem('acpPort') ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const parsedAcpPort = (() => {
+    const n = Number(acpPort.trim());
+    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined;
+  })();
 
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
 
@@ -84,7 +102,13 @@ export function App() {
     handleSendPrompt,
     handleStop,
     handleReset,
-  } = useAgentSession(activeTabId, { sensitiveActionAlerts, onDeviceModel, origin });
+  } = useAgentSession(activeTabId, {
+    sensitiveActionAlerts,
+    onDeviceModel,
+    acpBackend,
+    acpPort: parsedAcpPort,
+    origin,
+  });
   // The agent is waiting on the user: to allow a tool, or to keep using tools.
   const waitingOnUser = Boolean(pendingPermission || pendingCheckpoint);
 
@@ -103,6 +127,23 @@ export function App() {
     if (next) {
       void startOnDeviceModelDownload();
     }
+  };
+
+  const handleToggleAcpBackend = () => {
+    if (anyBusy) return;
+    const next = !acpBackend;
+    try {
+      localStorage.setItem('acpBackend', String(next));
+    } catch {}
+    setAcpBackend(next);
+  };
+
+  const handleChangeAcpPort = (value: string) => {
+    if (anyBusy) return;
+    try {
+      localStorage.setItem('acpPort', value);
+    } catch {}
+    setAcpPort(value);
   };
 
   const chatStreamEndRef = useRef<HTMLDivElement | null>(null);
@@ -167,6 +208,10 @@ export function App() {
             onDeviceModel={onDeviceModel}
             onToggleOnDeviceModel={handleToggleOnDeviceModel}
             onDeviceModelSupported={onDeviceModelSupported}
+            acpBackend={acpBackend}
+            onToggleAcpBackend={handleToggleAcpBackend}
+            acpPort={acpPort}
+            onChangeAcpPort={handleChangeAcpPort}
             responseInProgress={anyBusy}
             onClose={() => setShowSettings(false)}
           />

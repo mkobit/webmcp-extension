@@ -13,6 +13,10 @@ export interface SettingsScreenProps {
   onDeviceModel: boolean;
   onToggleOnDeviceModel: () => void;
   onDeviceModelSupported: boolean;
+  acpBackend?: boolean;
+  onToggleAcpBackend?: () => void;
+  acpPort?: string;
+  onChangeAcpPort?: (port: string) => void;
   /** A response is being generated, which the model must not change under. */
   responseInProgress?: boolean;
   onClose: () => void;
@@ -28,12 +32,18 @@ export function SettingsScreen({
   onDeviceModel,
   onToggleOnDeviceModel,
   onDeviceModelSupported,
+  acpBackend = false,
+  onToggleAcpBackend,
+  acpPort = '',
+  onChangeAcpPort,
   responseInProgress = false,
   onClose,
 }: SettingsScreenProps) {
   const alertsDescId = useId();
   const modelDescId = useId();
   const modelLockedId = useId();
+  const acpDescId = useId();
+  const acpPortId = useId();
   const modelLocked = onDeviceModelSupported && responseInProgress;
 
   return (
@@ -109,6 +119,47 @@ export function SettingsScreen({
               />
             </div>
           </div>
+
+          {onToggleAcpBackend && (
+            <div className="settings-item">
+              <div className="settings-item__icon">
+                <DeviceIcon size={24} color="var(--color-on-surface-variant)" />
+              </div>
+              <div className="settings-item__content">
+                <span className="settings-item__title">External ACP backend</span>
+                <p id={acpDescId} className="settings-item__desc">
+                  Route server turns to a running local ACP service instead of an AI SDK provider.
+                </p>
+                {acpBackend && !onDeviceModel && onChangeAcpPort && (
+                  <div style={{ marginTop: 8 }}>
+                    <label htmlFor={acpPortId} className="settings-item__desc" style={{ display: 'block', marginBottom: 4 }}>
+                      ACP TCP port (optional; defaults to server .env):
+                    </label>
+                    <input
+                      id={acpPortId}
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={acpPort}
+                      disabled={responseInProgress}
+                      onChange={(e) => onChangeAcpPort(e.target.value)}
+                      placeholder="e.g. 45123"
+                      style={{ width: '100%', padding: '4px 8px', fontSize: 13 }}
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="settings-item__control">
+                <Switch
+                  checked={acpBackend}
+                  onChange={onToggleAcpBackend}
+                  disabled={onDeviceModel || responseInProgress}
+                  aria-label="External ACP backend"
+                  aria-describedby={acpDescId}
+                />
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
