@@ -96,9 +96,9 @@ test('mcpServer - handles tools/call and executes registered executor', async ()
   assert.equal(callResult.content[0].text, '12');
 });
 
-test('mcpServer - suspends consequential tools and requires approval', async () => {
+test('mcpServer - delegates consequential tools directly to executor without internal blocking', async () => {
   const mcp = new McpServer({
-    executor: async () => ({ result: 'purchase completed' }),
+    executor: async (name, args) => ({ result: { executed: name, args } }),
   });
 
   mcp.setTools([
@@ -119,21 +119,14 @@ test('mcpServer - suspends consequential tools and requires approval', async () 
     },
   };
 
-  const callPromise = mcp.handleJsonRpc(callReq);
-
-  // Verify pending approval exists
-  const pending = mcp.getPendingApprovals();
-  assert.equal(pending.length, 1);
-  assert.equal(pending[0].name, 'buyItem');
-
-  // Resolve with denial
-  mcp.resolveApproval(pending[0].callId, { approved: false, reason: 'Too expensive' });
-
-  const callRes = await callPromise;
+  const callRes = await mcp.handleJsonRpc(callReq);
   assert.ok(callRes);
   const callResult = callRes.result as McpCallToolResult;
-  assert.equal(callResult.isError, true);
-  assert.match(callResult.content[0].text, /Too expensive/);
+  assert.equal(callResult.isError, undefined);
+  assert.deepEqual(JSON.parse(callResult.content[0].text), {
+    executed: 'buyItem',
+    args: { itemId: 'sku-123' },
+  });
 });
 
 test('mcpServer - applies base64 spotlighting when untrustedContentHint is true', async () => {

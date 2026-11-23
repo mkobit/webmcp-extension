@@ -39,10 +39,70 @@ export const HOST = getEnv(env, 'HOST') || '127.0.0.1';
 export const PORT = getEnv(env, 'PORT') || '3000';
 
 export const mcpServer = new McpServer();
-const acpCommand = getEnv(env, 'ACP_COMMAND');
-const acpSocketPath = getEnv(env, 'ACP_SOCKET_PATH');
-const acpPort = getEnv(env, 'ACP_PORT');
+const envAcpSocketPath = getEnv(env, 'ACP_SOCKET_PATH');
+const envAcpPort = getEnv(env, 'ACP_PORT');
+
+interface PendingMcpToolCall {
+  resolve: (outcome: { result?: unknown; error?: string }) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface AcpSessionState {
+  acpSessionId: string;
+  mcpServer: McpServer;
+  activeRes: http.ServerResponse | null;
+  pendingCalls: Map<string, PendingMcpToolCall>;
+}
+
+const MCP_TOOL_CALL_TIMEOUT_MS = 120_000;
+const acpSessions = new Map<string, AcpSessionState>();
 let activeAcpClient: AcpClient | null = null;
+let activeAcpTargetKey = '';
+let acpConnectPromise: Promise<AcpClient> | null = null;
+
+async function getConnectedAcpClient(requestedPort?: number): Promise<AcpClient> {
+  const port = requestedPort ?? (envAcpPort ? Number(envAcpPort) : undefined);
+  const socketPath = requestedPort ? undefined : envAcpSocketPath;
+
+  if (!socketPath && (!port || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    throw httpError(
+      400,
+      'ACP backend requires ACP_PORT or ACP_SOCKET_PATH to be configured (external ACP service).'
+    );
+  }
+
+  const targetKey = socketPath ? `unix:${socketPath}` : `tcp:${port}`;
+  if (activeAcpClient?.connected && activeAcpTargetKey === targetKey) {
+    return activeAcpClient;
+  }
+
+  if (acpConnectPromise && activeAcpTargetKey === targetKey) {
+    return acpConnectPromise;
+  }
+
+  if (activeAcpClient) {
+    activeAcpClient.close();
+    activeAcpClient = null;
+  }
+
+  activeAcpTargetKey = targetKey;
+  acpConnectPromise = (async () => {
+    const client = new AcpClient({
+      socketPath: socketPath || undefined,
+      port: socketPath ? undefined : port,
+    });
+    await client.connect();
+    await client.initialize();
+    activeAcpClient = client;
+    return client;
+  })();
+
+  try {
+    return await acpConnectPromise;
+  } finally {
+    acpConnectPromise = null;
+  }
+}
 
 /**
  * Which provider and model answer a turn is settled here, from `.env`, and is
@@ -148,6 +208,7 @@ interface ChatRequestBody {
   toolResponses?: ToolResponse[];
   tools?: ToolDeclaration[];
   backend?: string;
+  acpPort?: number;
 }
 
 function parseJsonBody<T = ChatRequestBody>(req: http.IncomingMessage): Promise<T> {
@@ -368,8 +429,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/mcp' && req.method === 'POST') {
+      const sessionParam = url.searchParams.get('session');
+      const targetMcpServer = sessionParam ? acpSessions.get(sessionParam)?.mcpServer : mcpServer;
+      if (!targetMcpServer) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unknown ACP session.' }));
+        return;
+      }
       const body = (await parseJsonBody(req)) as import('./acp/types.ts').JsonRpcRequest;
-      const rpcResponse = await mcpServer.handleJsonRpc(body);
+      const rpcResponse = await targetMcpServer.handleJsonRpc(body);
       if (rpcResponse) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(rpcResponse));
@@ -381,24 +449,60 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/mcp/tools' && req.method === 'POST') {
+      const sessionParam = url.searchParams.get('session');
+      const targetMcpServer = sessionParam ? acpSessions.get(sessionParam)?.mcpServer : mcpServer;
+      if (!targetMcpServer) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unknown ACP session.' }));
+        return;
+      }
       const { tools } = await parseJsonBody<{ tools?: ToolDeclaration[] }>(req);
       if (Array.isArray(tools)) {
-        mcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
+        targetMcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, count: mcpServer.getTools().length }));
+      res.end(JSON.stringify({ success: true, count: targetMcpServer.getTools().length }));
       return;
     }
 
-    if (url.pathname === '/api/mcp/confirm' && req.method === 'POST') {
-      const { callId, approved, reason } = await parseJsonBody<{
+    if (url.pathname === '/api/mcp/result' && req.method === 'POST') {
+      const { callId, sessionId, result, error } = await parseJsonBody<{
         callId?: string;
-        approved?: boolean;
-        reason?: string;
+        sessionId?: string;
+        result?: unknown;
+        error?: string;
       }>(req);
-      const resolved = mcpServer.resolveApproval(String(callId ?? ''), { approved: Boolean(approved), reason });
+
+      if (!callId || typeof callId !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'callId is required.' }));
+        return;
+      }
+
+      let settled = false;
+      const candidates = sessionId
+        ? [acpSessions.get(sessionId)].filter((s): s is AcpSessionState => Boolean(s))
+        : Array.from(acpSessions.values());
+
+      for (const session of candidates) {
+        const pending = session.pendingCalls.get(callId);
+        if (pending) {
+          clearTimeout(pending.timer);
+          session.pendingCalls.delete(callId);
+          pending.resolve({ result, error });
+          settled = true;
+          break;
+        }
+      }
+
+      if (!settled) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unknown or expired tool call ID.' }));
+        return;
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: resolved }));
+      res.end(JSON.stringify({ success: true }));
       return;
     }
 
@@ -406,8 +510,25 @@ const server = http.createServer(async (req, res) => {
       const { chatId } = await parseJsonBody(req);
       if (chatId) {
         chatSessions.delete(chatId);
+        const acpSession = acpSessions.get(chatId);
+        if (acpSession) {
+          for (const pending of acpSession.pendingCalls.values()) {
+            clearTimeout(pending.timer);
+            pending.resolve({ error: 'Chat session reset.' });
+          }
+          acpSession.pendingCalls.clear();
+          acpSessions.delete(chatId);
+        }
       } else {
         chatSessions.clear();
+        for (const acpSession of acpSessions.values()) {
+          for (const pending of acpSession.pendingCalls.values()) {
+            clearTimeout(pending.timer);
+            pending.resolve({ error: 'Chat sessions reset.' });
+          }
+          acpSession.pendingCalls.clear();
+        }
+        acpSessions.clear();
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true }));
@@ -415,61 +536,126 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/chat' && req.method === 'POST') {
-      const { message, toolResponses, tools, chatId, backend } = await parseJsonBody(req);
-
-      if (tools && Array.isArray(tools)) {
-        mcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
-      }
+      const { message, toolResponses, tools, chatId, backend, acpPort: reqAcpPort } = await parseJsonBody(req);
 
       const isAcp = backend === 'companion-acp' || (getEnv(env, 'BACKEND') === 'acp' && backend !== 'provider');
 
       if (isAcp) {
         const currentChatId = chatId || randomUUID();
+        const requestedPort =
+          typeof reqAcpPort === 'number' && Number.isInteger(reqAcpPort) && reqAcpPort >= 1 && reqAcpPort <= 65535
+            ? reqAcpPort
+            : undefined;
+
+        const client = await getConnectedAcpClient(requestedPort);
+
+        let sessionState = acpSessions.get(currentChatId);
+        if (!sessionState) {
+          const sessionMcpUrl = `http://${HOST}:${PORT}/api/mcp?session=${encodeURIComponent(currentChatId)}`;
+          const relayPath = path.resolve(__dirname, 'mcp-relay.js');
+          const pendingCalls = new Map<string, PendingMcpToolCall>();
+
+          const sessionMcpServer = new McpServer({
+            executor: async (name, args) => {
+              const current = acpSessions.get(currentChatId);
+              if (!current?.activeRes || current.activeRes.writableEnded) {
+                return { error: 'No active side-panel turn to execute this tool.' };
+              }
+
+              const callId = randomUUID();
+              return new Promise<{ result?: unknown; error?: string }>((resolve) => {
+                const timer = setTimeout(() => {
+                  current.pendingCalls.delete(callId);
+                  resolve({ error: `Tool execution "${name}" timed out after ${MCP_TOOL_CALL_TIMEOUT_MS / 1000}s.` });
+                }, MCP_TOOL_CALL_TIMEOUT_MS);
+
+                current.pendingCalls.set(callId, { resolve, timer });
+                current.activeRes!.write(
+                  JSON.stringify({ type: 'toolCall', callId, name, args }) + '\n'
+                );
+              });
+            },
+          });
+
+          const newSessionRes = await client.newSession({
+            cwd: process.cwd(),
+            mcpServers: [
+              {
+                name: 'webmcp',
+                command: 'node',
+                args: [relayPath, sessionMcpUrl],
+                env: {
+                  WEBMCP_MCP_URL: sessionMcpUrl,
+                  WEBMCP_AUTH_TOKEN: authToken,
+                },
+              },
+            ],
+          });
+
+          sessionState = {
+            acpSessionId: newSessionRes.sessionId,
+            mcpServer: sessionMcpServer,
+            activeRes: null,
+            pendingCalls,
+          };
+          acpSessions.set(currentChatId, sessionState);
+        }
+
+        if (tools && Array.isArray(tools)) {
+          sessionState.mcpServer.setTools(tools as import('./mcp/mcpServer.ts').WebMcpToolEntry[]);
+        }
+
         res.writeHead(200, {
           'Content-Type': 'application/x-ndjson; charset=utf-8',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
         });
         res.socket?.setNoDelay(true);
+        sessionState.activeRes = res;
+
+        let aborted = false;
+        res.on('close', () => {
+          aborted = true;
+          if (sessionState && sessionState.activeRes === res) {
+            sessionState.activeRes = null;
+          }
+          for (const [id, pending] of sessionState.pendingCalls.entries()) {
+            clearTimeout(pending.timer);
+            pending.resolve({ error: 'Turn aborted by user.' });
+            sessionState.pendingCalls.delete(id);
+          }
+        });
 
         try {
-          if (!activeAcpClient || !activeAcpClient.connected) {
-            const cmd = acpCommand || 'agy';
-            const args = cmd === 'agy' ? ['acp'] : [];
-            activeAcpClient = new AcpClient({
-              command: acpSocketPath || acpPort ? undefined : cmd,
-              args,
-              socketPath: acpSocketPath || undefined,
-              port: acpPort ? Number(acpPort) : undefined,
-            });
-            await activeAcpClient.connect();
-            await activeAcpClient.initialize();
-            await activeAcpClient.newSession({
-              cwd: process.cwd(),
-              mcpServers: [
-                {
-                  name: 'webmcp',
-                  url: `http://127.0.0.1:${PORT}/api/mcp`,
-                },
-              ],
-            });
-          }
-
           let fullText = '';
-          await activeAcpClient.prompt(String(message ?? ''), (update) => {
-            const chunkText = update.delta || update.content;
-            if (chunkText) {
-              fullText += chunkText;
-              res.write(JSON.stringify({ delta: chunkText }) + '\n');
-            }
-          });
+          await client.prompt(
+            String(message ?? ''),
+            (update) => {
+              if (aborted || res.writableEnded) return;
+              const chunkText = update.delta || update.content;
+              if (chunkText) {
+                fullText += chunkText;
+                res.write(JSON.stringify({ delta: chunkText }) + '\n');
+              }
+            },
+            sessionState.acpSessionId
+          );
 
-          res.write(JSON.stringify({ done: true, chatId: currentChatId, text: fullText, functionCalls: [] }) + '\n');
-          res.end();
+          if (!aborted && !res.writableEnded) {
+            res.write(JSON.stringify({ done: true, chatId: currentChatId, text: fullText, functionCalls: [] }) + '\n');
+            res.end();
+          }
         } catch (err: unknown) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          res.write(JSON.stringify({ error: errMsg }) + '\n');
-          res.end();
+          acpSessions.delete(currentChatId);
+          if (!aborted && !res.writableEnded) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            res.write(JSON.stringify({ error: errMsg }) + '\n');
+            res.end();
+          }
+        } finally {
+          if (sessionState.activeRes === res) {
+            sessionState.activeRes = null;
+          }
         }
         return;
       }

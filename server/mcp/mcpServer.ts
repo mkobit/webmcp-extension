@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { randomUUID } from 'node:crypto';
 import type {
   McpTool,
   McpInitializeResult,
@@ -30,17 +29,8 @@ export type ToolExecutor = (
   args: Record<string, unknown>
 ) => Promise<{ result?: unknown; error?: string }>;
 
-export interface PendingToolApproval {
-  callId: string;
-  name: string;
-  args: Record<string, unknown>;
-  consequentialHint?: boolean;
-  resolve: (decision: { approved: boolean; reason?: string }) => void;
-}
-
 export class McpServer {
   private tools: Map<string, WebMcpToolEntry> = new Map();
-  private pendingApprovals: Map<string, PendingToolApproval> = new Map();
   private executor?: ToolExecutor;
 
   constructor(options: { executor?: ToolExecutor } = {}) {
@@ -69,24 +59,6 @@ export class McpServer {
       consequentialHint: tool.consequentialHint,
       untrustedContentHint: tool.untrustedContentHint,
     }));
-  }
-
-  public getPendingApprovals(): Array<{ callId: string; name: string; args: Record<string, unknown> }> {
-    return Array.from(this.pendingApprovals.values()).map(({ callId, name, args }) => ({
-      callId,
-      name,
-      args,
-    }));
-  }
-
-  public resolveApproval(callId: string, decision: { approved: boolean; reason?: string }): boolean {
-    const pending = this.pendingApprovals.get(callId);
-    if (!pending) {
-      return false;
-    }
-    this.pendingApprovals.delete(callId);
-    pending.resolve(decision);
-    return true;
   }
 
   public async handleJsonRpc(
@@ -133,29 +105,6 @@ export class McpServer {
         return { jsonrpc: '2.0', id, result: errorResult };
       }
 
-      // Check if consequential tool approval is required
-      if (toolEntry.consequentialHint) {
-        const callId = randomUUID();
-        const decisionPromise = new Promise<{ approved: boolean; reason?: string }>((resolve) => {
-          this.pendingApprovals.set(callId, {
-            callId,
-            name: toolName,
-            args: toolArgs,
-            consequentialHint: true,
-            resolve,
-          });
-        });
-
-        const decision = await decisionPromise;
-        if (!decision.approved) {
-          const denialResult: McpCallToolResult = {
-            content: [{ type: 'text', text: `Tool call "${toolName}" was denied by the user: ${decision.reason || 'User rejected permission.'}` }],
-            isError: true,
-          };
-          return { jsonrpc: '2.0', id, result: denialResult };
-        }
-      }
-
       if (!this.executor) {
         const fallbackResult: McpCallToolResult = {
           content: [{ type: 'text', text: JSON.stringify({ status: 'ok', tool: toolName, args: toolArgs }) }],
@@ -180,14 +129,13 @@ export class McpServer {
           rawOutput = JSON.stringify(executionOutcome.result ?? null);
         }
 
-        // Apply spotlighting if untrustedContentHint is true
-        if (toolEntry.untrustedContentHint) {
-          rawOutput = Buffer.from(rawOutput, 'utf-8').toString('base64');
-        }
-
-        // Truncate to MAX_TOOL_RESPONSE_CHARS
+        // Truncate before spotlighting so Base64 output is never sliced mid-encoding.
         if (rawOutput.length > MAX_TOOL_RESPONSE_CHARS) {
           rawOutput = rawOutput.slice(0, MAX_TOOL_RESPONSE_CHARS) + '... [truncated]';
+        }
+
+        if (toolEntry.untrustedContentHint) {
+          rawOutput = Buffer.from(rawOutput, 'utf-8').toString('base64');
         }
 
         const successResult: McpCallToolResult = {

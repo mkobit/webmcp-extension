@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { postToBackend, streamChat } from './backendBridge.js';
+import { postToBackend, streamChat, type StreamToolCall } from './backendBridge.js';
 import { getSpotlightFence, resetOnDeviceChat, sendOnDeviceChat } from './promptApiBackend.js';
 import { type ChatTurnRequest, type ChatTurnResponse } from '../types/index.js';
 
@@ -20,11 +20,12 @@ export async function sendChatTurn(
     signal?: AbortSignal;
     onDevice?: boolean;
     onText?: (text: string) => void;
+    onToolCall?: (call: StreamToolCall) => void;
     /** For a checkpoint summary, return the first tool request without continuing the model loop. */
     stopOnToolCall?: boolean;
   } = {}
 ): Promise<ChatTurnResponse> {
-  const { signal, onDevice = false, onText, stopOnToolCall } = options;
+  const { signal, onDevice = false, onText, onToolCall, stopOnToolCall } = options;
   if (onDevice) {
     // A new message with no chatId starts a new chat. Without an id here, the
     // on-device backend would carry on with whichever tab's chat it holds.
@@ -37,7 +38,7 @@ export async function sendChatTurn(
       { signal, onText, stopOnToolCall }
     );
   }
-  return streamChat('/api/chat', request, { signal, onText });
+  return streamChat('/api/chat', request, { signal, onText, onToolCall });
 }
 
 /**

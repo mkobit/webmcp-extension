@@ -112,11 +112,22 @@ export class AcpClient extends EventEmitter {
     throw new Error('No valid transport configured for AcpClient (command, socketPath, port, or stream required)');
   }
 
+  private rejectPendingRequests(reason: string): void {
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(new Error(reason));
+    }
+    this.pendingRequests.clear();
+  }
+
   private setupStreamListeners(): void {
     if (!this.stream) return;
     this.stream.on('data', (chunk: Buffer) => this.handleData(chunk.toString('utf-8')));
-    this.stream.on('error', (err) => this.emit('error', err));
+    this.stream.on('error', (err) => {
+      this.rejectPendingRequests(`AcpClient stream error: ${err.message}`);
+      this.emit('error', err);
+    });
     this.stream.on('close', () => {
+      this.rejectPendingRequests('AcpClient connection closed');
       this.emit('close');
     });
   }
@@ -298,10 +309,7 @@ export class AcpClient extends EventEmitter {
   }
 
   public close(): void {
-    for (const [, pending] of this.pendingRequests) {
-      pending.reject(new Error('AcpClient connection closed'));
-    }
-    this.pendingRequests.clear();
+    this.rejectPendingRequests('AcpClient connection closed');
 
     if (this.childProcess) {
       this.childProcess.kill();

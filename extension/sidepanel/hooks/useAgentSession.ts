@@ -11,7 +11,7 @@ import {
   useRef,
   useSyncExternalStore,
 } from 'react';
-import { formatErrorMessage } from '../services/backendBridge.js';
+import { formatErrorMessage, postToBackend, type StreamToolCall } from '../services/backendBridge.js';
 import { endChat, getSpotlighting, sendChatTurn } from '../services/chatBridge.js';
 import { executeTabTool, getTabInfo, requestTabTools, ToolError } from '../services/extensionBridge.js';
 import { tabSessions } from '../services/tabSessionStore.js';
@@ -411,7 +411,8 @@ export function useAgentSession(
      * the model. Returns null when the turn was stopped along the way.
      */
     const runToolCall = async (
-      call: NonNullable<ChatTurnResponse['functionCalls']>[number]
+      call: NonNullable<ChatTurnResponse['functionCalls']>[number],
+      callOptions?: { raw?: boolean }
     ): Promise<ToolResponse | null> => {
       const { name, frameId } = decodeToolName(call.name);
       // Find the tool declaration among this tab's tools without crossing frame boundaries
@@ -481,12 +482,29 @@ export function useAgentSession(
               favicon: movedInfo.favicon || prev.favicon,
             }));
           }
+          if (callOptions?.raw && internals.chatId) {
+            await waitForToolsToSettle(toolsView, {
+              requestTools: () => requestTabTools(turnTabId),
+              signal,
+            });
+            if (signal.aborted) return null;
+            await postToBackend(
+              `/api/mcp/tools?session=${encodeURIComponent(internals.chatId)}`,
+              { tools: buildToolDecls(toolsView.current) },
+              { signal }
+            ).catch(() => {});
+          }
         }
 
         const schemaViolation = checkOutputSchema(rawRes, targetTool);
         if (schemaViolation) {
           completeActivity(entry);
           return toolResponse(call, { error: schemaViolation });
+        }
+
+        if (callOptions?.raw) {
+          completeActivity(entry);
+          return toolResponse(call, { result: rawRes });
         }
 
         const res = applySpotlighting(
@@ -503,7 +521,9 @@ export function useAgentSession(
         if (signal.aborted) return null;
         completeActivity(entry);
         const message = (err as Error)?.message || String(err);
-        if (!(err instanceof ToolError)) return toolResponse(call, { error: message });
+        if (callOptions?.raw || !(err instanceof ToolError)) {
+          return toolResponse(call, { error: message });
+        }
         // What a tool threw comes from the page as much as its result does, so
         // it is cut and spotlighted the same way before the model reads it.
         const error = applySpotlighting(
@@ -515,6 +535,28 @@ export function useAgentSession(
       }
     };
 
+    const onToolCall = (call: StreamToolCall) => {
+      void (async () => {
+        const response = await runToolCall(
+          { id: call.callId, name: call.name, args: call.args },
+          { raw: true }
+        );
+        if (signal.aborted || !response) {
+          void postToBackend('/api/mcp/result', {
+            callId: call.callId,
+            sessionId: internals.chatId,
+            error: 'Turn aborted by user.',
+          }).catch(() => {});
+          return;
+        }
+        await postToBackend('/api/mcp/result', {
+          callId: call.callId,
+          sessionId: internals.chatId,
+          ...response.functionResponse.response,
+        }).catch(() => {});
+      })();
+    };
+
     try {
       const toolDecls = buildToolDecls(toolsView.current);
       let currentResult: ChatTurnResponse = await sendChatTurn(
@@ -523,7 +565,7 @@ export function useAgentSession(
           tools: toolDecls,
           chatId: internals.chatId,
         },
-        { signal, onDevice: onDeviceModelRef.current, onText }
+        { signal, onDevice: onDeviceModelRef.current, onText, onToolCall }
       );
 
       if (signal.aborted) return;

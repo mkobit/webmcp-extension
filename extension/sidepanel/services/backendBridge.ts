@@ -136,17 +136,31 @@ export async function postToBackend<T = Record<string, unknown>>(
   return json as T;
 }
 
+export interface StreamToolCall {
+  callId: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
 /**
  * Runs one streamed chat turn on the server and returns the assistant's reply
  * and any tool calls it requested.
  *
- * The reply is NDJSON: `{ delta }` lines with each new piece of text, then one
- * `{ done, chatId, text, functionCalls }` line, or an `{ error }` line.
+ * The reply is NDJSON: `{ delta }` lines with each new piece of text,
+ * `{ type: 'toolCall', callId, name, args }` lines for mid-turn ACP tool calls,
+ * then one `{ done, chatId, text, functionCalls }` line, or an `{ error }` line.
  */
 export async function streamChat(
   endpoint: string,
   data: unknown,
-  { onText, ...options }: Omit<RequestInit, 'headers'> & { onText?: (text: string) => void } = {}
+  {
+    onText,
+    onToolCall,
+    ...options
+  }: Omit<RequestInit, 'headers'> & {
+    onText?: (text: string) => void;
+    onToolCall?: (call: StreamToolCall) => void;
+  } = {}
 ): Promise<ChatTurnResponse> {
   let res: Response;
   try {
@@ -191,6 +205,13 @@ export async function streamChat(
     if (chunk.error) {
       reported = new Error(formatErrorMessage(chunk.error));
       throw reported;
+    }
+    if (chunk.type === 'toolCall' && typeof chunk.callId === 'string' && typeof chunk.name === 'string') {
+      onToolCall?.({
+        callId: chunk.callId,
+        name: chunk.name,
+        args: (chunk.args && typeof chunk.args === 'object' ? chunk.args : {}) as Record<string, unknown>,
+      });
     }
     if (typeof chunk.delta === 'string' && chunk.delta) {
       fullText += chunk.delta;
