@@ -42,6 +42,21 @@ export const mcpServer = new McpServer();
 const envAcpSocketPath = getEnv(env, 'ACP_SOCKET_PATH');
 const envAcpPort = getEnv(env, 'ACP_PORT');
 
+function parseAcpRunnerArg(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--acp-runner') {
+      return argv[i + 1];
+    }
+    if (arg.startsWith('--acp-runner=')) {
+      return arg.slice('--acp-runner='.length);
+    }
+  }
+  return undefined;
+}
+
+const acpRunner = parseAcpRunnerArg(process.argv.slice(2)) || getEnv(env, 'ACP_RUNNER');
+
 interface PendingMcpToolCall {
   resolve: (outcome: { result?: unknown; error?: string }) => void;
   timer: NodeJS.Timeout;
@@ -63,15 +78,20 @@ let acpConnectPromise: Promise<AcpClient> | null = null;
 async function getConnectedAcpClient(requestedPort?: number): Promise<AcpClient> {
   const port = requestedPort ?? (envAcpPort ? Number(envAcpPort) : undefined);
   const socketPath = requestedPort ? undefined : envAcpSocketPath;
+  const useRunner = !socketPath && !port && Boolean(acpRunner?.trim());
 
-  if (!socketPath && (!port || !Number.isInteger(port) || port < 1 || port > 65535)) {
+  if (!useRunner && !socketPath && (!port || !Number.isInteger(port) || port < 1 || port > 65535)) {
     throw httpError(
       400,
-      'ACP backend requires ACP_PORT or ACP_SOCKET_PATH to be configured (external ACP service).'
+      'ACP backend requires ACP_PORT, ACP_SOCKET_PATH, or --acp-runner "<command>".'
     );
   }
 
-  const targetKey = socketPath ? `unix:${socketPath}` : `tcp:${port}`;
+  const targetKey = useRunner
+    ? `runner:${acpRunner!.trim()}`
+    : socketPath
+      ? `unix:${socketPath}`
+      : `tcp:${port}`;
   if (activeAcpClient?.connected && activeAcpTargetKey === targetKey) {
     return activeAcpClient;
   }
@@ -87,10 +107,19 @@ async function getConnectedAcpClient(requestedPort?: number): Promise<AcpClient>
 
   activeAcpTargetKey = targetKey;
   acpConnectPromise = (async () => {
-    const client = new AcpClient({
-      socketPath: socketPath || undefined,
-      port: socketPath ? undefined : port,
-    });
+    let client: AcpClient;
+    if (useRunner) {
+      const parts = acpRunner!.trim().split(/\s+/);
+      client = new AcpClient({
+        command: parts[0],
+        args: parts.slice(1),
+      });
+    } else {
+      client = new AcpClient({
+        socketPath: socketPath || undefined,
+        port: socketPath ? undefined : port,
+      });
+    }
     await client.connect();
     await client.initialize();
     activeAcpClient = client;
